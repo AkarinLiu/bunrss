@@ -125,5 +125,37 @@ res = await call(`/reader/api/0/stream/items/ids?s=${enc}&n=5000`);
 j = await res.json();
 check(j.itemRefs.length === 3 && j.continuation === undefined, "n=5000 returns every item in one page");
 
+// 9. subscribing through the GReader API primes the feed immediately, so the client's
+//    follow-up sync sees the articles instead of waiting for the background cron.
+const realFetch = globalThis.fetch;
+globalThis.fetch = (async (input: any) => {
+  if (String(input) === "https://new.example/rss") {
+    return new Response(
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>New</title><link>https://new.example</link>` +
+        `<item><title>Fresh</title><link>https://new.example/1</link><guid>fresh-1</guid><pubDate>${new Date().toUTCString()}</pubDate></item>` +
+        `</channel></rss>`,
+      { status: 200, headers: { "content-type": "application/rss+xml" } },
+    );
+  }
+  return new Response("not found", { status: 404 });
+}) as typeof fetch;
+res = await call("/reader/api/0/subscription/quickadd", form, "POST", "quickadd=" + encodeURIComponent("https://new.example/rss"));
+globalThis.fetch = realFetch;
+const newFeed = db.query<{ id: number }, []>("SELECT id FROM feed WHERE feed_url = 'https://new.example/rss'").get();
+const primed = newFeed
+  ? ((await (await call(`/reader/api/0/stream/items/ids?s=${encodeURIComponent("feed/https://new.example/rss")}`)).json()) as any)
+      .itemRefs.length
+  : 0;
+check(res.status === 200 && !!newFeed && primed === 1, "GReader subscribe fetches the feed immediately");
+
+// 10. the freshly primed article shows up in the unread reading-list the client polls
+const newArticle = newFeed ? db.query<{ id: number }, [number]>("SELECT id FROM article WHERE feed_id = ?").get(newFeed.id) : null;
+const readingList = (await (
+  await call(
+    `/reader/api/0/stream/items/ids?s=${encodeURIComponent("user/-/state/com.google/reading-list")}&xt=${encodeURIComponent("user/-/state/com.google/read")}`,
+  )
+).json()) as any;
+check(!!newArticle && readingList.itemRefs.some((r: any) => r.id === String(newArticle.id)), "new feed's article appears in the unread reading-list");
+
 console.log(failed ? `\n${failed} check(s) failed` : "\nall greader checks passed");
 process.exit(failed ? 1 : 0);

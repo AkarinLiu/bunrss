@@ -5,6 +5,7 @@
 import { Hono } from "hono";
 import { db } from "./db";
 import { setArticleState, subscribe } from "./library";
+import { refreshFeed, type FeedRow } from "./fetcher";
 
 type Env = { Variables: { userId: number; email: string; token: string } };
 
@@ -191,6 +192,18 @@ function categoryId(userId: number, name: string): number {
     .get(userId, name, Date.now())!.id;
 }
 
+/**
+ * Fetch a freshly subscribed feed's articles right away, so the client that just called
+ * `subscription/edit`/`quickadd` sees them on its next sync instead of waiting for the cron.
+ * Awaited like FreshRSS does, so an immediate follow-up `stream/items/ids` isn't a race.
+ */
+async function primeFeed(feedId: number): Promise<void> {
+  const row = db
+    .query<FeedRow, [number]>("SELECT id, feed_url, etag, last_modified FROM feed WHERE id = ?")
+    .get(feedId);
+  if (row) await refreshFeed(row).catch(() => {});
+}
+
 // ---------------------------------------------------------------- app
 
 export const greader = new Hono<Env>();
@@ -280,6 +293,7 @@ greader.post("/reader/api/0/subscription/edit", async (c) => {
   if (ac === "subscribe") {
     const res = subscribe(userId, url, catId ?? null, title ?? null);
     if ("error" in res) return c.text(res.error, res.status);
+    if (res.created) await primeFeed(res.feedId);
   }
   if (title !== null || catId !== undefined) {
     if (title !== null)
@@ -305,6 +319,7 @@ greader.post("/reader/api/0/subscription/quickadd", async (c) => {
   if (!/^https?:\/\//i.test(query)) return c.json({ numResults: 0, query, streamId: null });
   const res = subscribe(userId, query, null, null);
   if ("error" in res) return c.text(res.error, res.status);
+  if (res.created) await primeFeed(res.feedId);
   return c.json({ numResults: 1, query, streamId: "feed/" + query });
 });
 
