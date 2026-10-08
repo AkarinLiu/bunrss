@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router"
 import Reader from "./views/Reader.vue";
 import Login from "./views/Login.vue";
 import Setup from "./views/Setup.vue";
+import Verify from "./views/Verify.vue";
 import Settings from "./views/Settings.vue";
 import Subscribe from "./views/Subscribe.vue";
 import Admin from "./views/Admin.vue";
@@ -10,6 +11,7 @@ import { useAuth } from "./store";
 const routes: RouteRecordRaw[] = [
   { path: "/setup", component: Setup, meta: { public: true } },
   { path: "/login", component: Login, meta: { public: true } },
+  { path: "/verify", component: Verify, meta: { public: true } },
   { path: "/", component: Reader },
   { path: "/feed/:feedId(\\d+)", component: Reader },
   { path: "/category/:categoryId(\\d+)", component: Reader },

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { db } from "./db";
-import { adminCreateUser, currentUser, login, logout, needsSetup, register, setUsername, setupAdmin, type User } from "./auth";
-import { err, json, readJson } from "./http";
+import { adminCreateUser, currentUser, login, logout, needsSetup, register, resendVerification, setUsername, setupAdmin, verifyEmail, type User } from "./auth";
+import { err, json, readJson, requestOrigin } from "./http";
 import { discoverFeeds, extractFullText, refreshAll, refreshFeed, refreshStale } from "./fetcher";
 import {
   addArticleTag,
@@ -196,7 +196,18 @@ app.post("/api/setup", async (c) => {
 app.post("/api/auth/register", async (c) => {
   const b = await readJson<{ email?: string; username?: string; password?: string }>(c.req.raw);
   if (!b?.email || !b.username || !b.password) return err(400, "email/username/password required");
-  return register(b.email, b.username, b.password, clientIp(c.req.raw), localeFrom(c.req.raw));
+  return register(b.email, b.username, b.password, clientIp(c.req.raw), localeFrom(c.req.raw), requestOrigin(c.req.raw));
+});
+// public: confirm an emailed token, or ask for a fresh one (both deliberately leak nothing)
+app.post("/api/auth/verify", async (c) => {
+  const b = await readJson<{ token?: string }>(c.req.raw);
+  if (!b?.token) return err(400, "token required");
+  return verifyEmail(b.token, localeFrom(c.req.raw));
+});
+app.post("/api/auth/resend", async (c) => {
+  const b = await readJson<{ email?: string }>(c.req.raw);
+  if (!b?.email) return err(400, "email required");
+  return resendVerification(b.email, localeFrom(c.req.raw), requestOrigin(c.req.raw));
 });
 app.post("/api/auth/login", async (c) => {
   const b = await readJson<{ email?: string; password?: string }>(c.req.raw);

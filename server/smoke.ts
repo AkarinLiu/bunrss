@@ -9,7 +9,9 @@ const dbFile = join(tmpdir(), `bunrss-smoke-${Date.now()}-${Math.floor(Math.rand
 const server = external
   ? null
   : Bun.spawn(["bun", "server/index.ts"], {
-      env: { ...process.env, DATABASE_URL: dbFile, PORT: "0" },
+      // SMTP_HOST is forced empty (after the spread) so a developer's .env can't turn on
+      // forced verification and break the register/login checks below.
+      env: { ...process.env, DATABASE_URL: dbFile, PORT: "0", SMTP_HOST: "" },
       stdout: "pipe",
       stderr: "inherit",
     });

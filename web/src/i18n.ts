@@ -42,6 +42,13 @@ const zh = {
   "auth.register": "注册",
   "auth.toRegister": "没有账号？注册",
   "auth.toLogin": "已有账号？登录",
+  "auth.verifySent": "验证邮件已发送至 {email}，请查收并点击链接完成验证后再登录。",
+  "auth.resend": "重新发送验证邮件",
+
+  "verify.working": "正在验证…",
+  "verify.ok": "邮箱验证成功，现在可以登录了。",
+  "verify.failed": "验证失败",
+  "verify.missing": "验证链接缺少 token，请重新发送验证邮件。",
 
   "setup.passwordMismatch": "两次输入的密码不一致",
   "setup.stepAdmin": "1 管理员",
@@ -235,6 +242,13 @@ const en: Record<MessageKey, string> = {
   "auth.register": "Sign up",
   "auth.toRegister": "No account? Sign up",
   "auth.toLogin": "Already have an account? Sign in",
+  "auth.verifySent": "We emailed a verification link to {email}. Open it, then sign in.",
+  "auth.resend": "Resend verification email",
+
+  "verify.working": "Verifying…",
+  "verify.ok": "Your email is verified. You can sign in now.",
+  "verify.failed": "Verification failed",
+  "verify.missing": "The verification link is missing its token; please request a new one.",
 
   "setup.passwordMismatch": "Passwords do not match",
   "setup.stepAdmin": "1 Admin",

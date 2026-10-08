@@ -7,7 +7,19 @@ export const json = (data: unknown, init?: ResponseInit): Response =>
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
   });
 
-export const err = (status: number, message: string): Response => json({ error: message }, { status });
+// `code` is an optional machine-readable tag the client can branch on (e.g. email_unverified)
+// without matching on the localized `error` text.
+export const err = (status: number, message: string, code?: string): Response =>
+  json(code ? { error: message, code } : { error: message }, { status });
+
+/** Public base URL for links in emails: APP_URL wins, else the browser's Origin, else the request URL. */
+export function requestOrigin(req: Request): string {
+  const configured = process.env.APP_URL?.replace(/\/+$/, "");
+  if (configured) return configured;
+  const origin = req.headers.get("origin");
+  if (origin) return origin.replace(/\/+$/, "");
+  return new URL(req.url).origin;
+}
 
 export function parseCookies(header: string | null): Record<string, string> {
   const out: Record<string, string> = {};

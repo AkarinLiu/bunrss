@@ -12,6 +12,8 @@ const zh = {
   "auth.registrationClosed": "注册已关闭",
   "auth.usernameImmutable": "用户名不可更改",
   "auth.invalidCredentials": "用户名/邮箱或密码错误",
+  "auth.emailUnverified": "邮箱尚未验证，请查收验证邮件并点击链接后再登录",
+  "auth.verifyInvalid": "验证链接无效或已过期，请重新发送",
 
   "library.subscriptionLimit": "订阅数量已达上限（{max}）",
   "library.starLimit": "星标数量已达上限（{max}）",
@@ -44,6 +46,8 @@ const en: Record<MessageKey, string> = {
   "auth.registrationClosed": "Registration is closed",
   "auth.usernameImmutable": "Username cannot be changed",
   "auth.invalidCredentials": "Wrong username/email or password",
+  "auth.emailUnverified": "Email not verified yet — open the verification link we emailed you, then sign in",
+  "auth.verifyInvalid": "This verification link is invalid or has expired; please request a new one",
 
   "library.subscriptionLimit": "Subscription limit reached ({max})",
   "library.starLimit": "Star limit reached ({max})",

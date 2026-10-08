@@ -64,15 +64,28 @@ DATABASE_URL=./data/bunrss.db
 PORT=3000
 ```
 
+可选 SMTP（设置 `SMTP_HOST` 即启用发信，同时**强制**新注册用户验证邮箱后才可登录；已有账号视为已验证，不会被锁死）：
+
+```
+APP_URL=https://rss.example.com     # 验证邮件里链接的站点地址；浏览器请求会回落到自身 Origin
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false                   # 465 用 true（隐式 TLS）；587/25 自动 STARTTLS
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM=bunrss <noreply@example.com>
+```
+
 ## 架构
 
 ```
 server/
   db.ts        bun:sqlite 连接 + PRAGMA + 启动时执行迁移
   migrate.ts   极简迁移 runner（migrations/*.sql，记录在 _migrations）
-  http.ts      JSON / cookie 辅助
+  http.ts      JSON / cookie 辅助、错误 code、邮件链接的站点地址
   i18n.ts      服务端错误消息目录（zh-CN / en）+ Accept-Language 解析
-  auth.ts      注册、登录（用户名或邮箱）、登出、session 校验、用户名设置；首启 setup / needsSetup（Bun.password + 随机 token）
+  mail.ts      SMTP 发信（nodemailer）+ 验证邮件文案；SMTP_HOST 决定发信与强制验证是否开启
+  auth.ts      注册、登录（用户名或邮箱）、登出、session 校验、用户名设置；邮箱验证 token；首启 setup / needsSetup（Bun.password + 随机 token）
   library.ts   订阅 / 已读星标 / 标签写入，唯一的配额校验点
   settings.ts  实例设置（订阅上限、星标上限、注册用户上限、是否允许注册），0 = 不限
   fetcher.ts   条件 GET 抓取、upsert 文章、全文抓取、定时刷新
@@ -82,7 +95,7 @@ server/
   smoke.ts        API 冒烟测试
   core.check.ts   setup + 配额 + 标签逻辑的自检（临时库，不需要起服务）
   greader.check.ts  Google Reader API 兼容性自检（临时库，不需要起服务）
-migrations/    0001_init.sql … 0010_feed_icon.sql（按序号自动应用）
+migrations/    0001_init.sql … 0011_email_verify.sql（按序号自动应用）
 web/           Vite + Vue 前端（api.ts / store.ts / router.ts / i18n.ts / views/）
 e2e.setup.ts   setup 向导 + 管理后台的无头浏览器回归检查
 ```
@@ -96,6 +109,7 @@ e2e.setup.ts   setup 向导 + 管理后台的无头浏览器回归检查
 - **首启 setup 向导**：库中无用户时强制进入向导，创建的第一个账号为管理员（`user.is_admin = 1`）；向导第二步可挑选/粘贴订阅源。已有用户后 `/api/setup` 一律 409
 - 多用户登录（注册 / 登录 / 登出，30 天 session cookie；向导之后注册的账号为普通用户）；账号有唯一用户名，登录时用户名或邮箱均可
 - **用户名**：注册 / setup 时必填，3-32 位字母（保留大小写）、数字、`_` 或 `-`；全局唯一且不区分大小写（`Alice` 与 `alice` 视为同一用户名），创建后不可更改。登录时用户名或邮箱均可；历史空用户名账号可在设置页补设一次；Google Reader 客户端的 ClientLogin 同样接受用户名
+- **邮箱验证（可选强制）**：配置 `SMTP_HOST` 后，公开注册的账号会收到一封验证邮件，验证前无法登录（`/api/auth/login` 返回 403 `email_unverified`，登录页可一键重发）；链接走 `POST /api/auth/verify`，token 一次性、24 小时有效。setup 创建的首个管理员与后台创建的账号直接视为已验证，存量账号也默认已验证，因此开启该功能不会把实例锁死；未配置 SMTP 时验证逻辑完全不生效，注册行为与从前一致
 - 订阅管理：添加 / 取消订阅，分组（category）归类，自定义标题
 - 文章列表：按订阅源 / 分组 / 未读 / 星标筛选，未读计数
 - 阅读：正文渲染（DOMPurify 消毒）、标已读 / 标星、抓取全文

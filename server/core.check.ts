@@ -7,8 +7,11 @@ import { deflateRawSync } from "node:zlib";
 
 const file = join(tmpdir(), `bunrss-check-${Date.now()}.db`);
 process.env.DATABASE_URL = file;
+// neutralize any SMTP config from the developer's .env so registration stays auto-verified here
+delete process.env.SMTP_HOST;
 
-const { adminCreateUser, login, needsSetup, setUsername, setupAdmin, register } = await import("./auth");
+const { adminCreateUser, login, needsSetup, setUsername, setupAdmin, register, verifyEmail } = await import("./auth");
+const { mailEnabled } = await import("./mail");
 const {
   addArticleTag,
   articleTags,
@@ -176,6 +179,26 @@ try {
   check(setUsername(legacyId, "Legacy").status === 200, "a username-less account can claim one");
   check(setUsername(legacyId, "Other").status === 409, "the claimed username is then immutable");
   check(setUsername(adminId, "root").status === 409, "an existing username cannot be changed");
+
+  // ---------------------------------------------------------------- email verification
+  check(mailEnabled() === false, "mail is off without SMTP_HOST");
+  check(
+    db.query<{ v: number }, [number]>("SELECT email_verified v FROM user WHERE id = ?").get(memberId)!.v === 1,
+    "accounts registered without SMTP are verified immediately",
+  );
+
+  // simulate a pending sign-up row, then exercise the token lifecycle
+  db.query("UPDATE user SET email_verified = 0, verify_token = 'tok-ok', verify_sent_at = ? WHERE id = ?").run(Date.now(), memberId);
+  check(verifyEmail("nope").status === 400, "an unknown verify token is refused");
+  db.query("UPDATE user SET verify_sent_at = ? WHERE id = ?").run(Date.now() - 25 * 60 * 60 * 1000, memberId);
+  check(verifyEmail("tok-ok").status === 400, "an expired verify token is refused");
+  db.query("UPDATE user SET verify_sent_at = ? WHERE id = ?").run(Date.now(), memberId);
+  check(verifyEmail("tok-ok").status === 200, "a valid verify token is accepted");
+  check(
+    db.query<{ v: number }, [number]>("SELECT email_verified v FROM user WHERE id = ?").get(memberId)!.v === 1,
+    "verification marks the account verified",
+  );
+  check(verifyEmail("tok-ok").status === 400, "a used verify token cannot be replayed");
 
   // ---------------------------------------------------------------- subscription limit
   setLimits({ maxSubscriptions: 2, maxStarred: 0 });

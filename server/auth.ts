@@ -1,5 +1,6 @@
 import { db } from "./db";
 import { allowRegistration, getLimit } from "./settings";
+import { mailEnabled, sendMail, verificationEmail } from "./mail";
 import { translate, type Locale, type MessageKey } from "./i18n";
 import {
   SESSION_COOKIE,
@@ -66,6 +67,7 @@ async function createAccount(
   username: string,
   password: string,
   isAdmin: 0 | 1,
+  verified: boolean,
   { cap, setupGuard }: { cap: boolean; setupGuard: boolean },
 ): Promise<
   | { id: number; email: string; username: string }
@@ -91,10 +93,10 @@ async function createAccount(
       if (max > 0 && db.query<{ n: number }, []>("SELECT COUNT(*) n FROM user").get()!.n >= max) return (reason = "cap");
     }
     id = db
-      .query<{ id: number }, [string, string, string, number, number]>(
-        "INSERT INTO user (email, username, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, ?) RETURNING id",
+      .query<{ id: number }, [string, string, string, number, number, number]>(
+        "INSERT INTO user (email, username, password_hash, created_at, is_admin, email_verified) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
       )
-      .get(email, username, hash, Date.now(), isAdmin)!.id;
+      .get(email, username, hash, Date.now(), isAdmin, verified ? 1 : 0)!.id;
   })();
   if (id === null) {
     const failure: Record<string, { status: number; key: MessageKey }> = {
@@ -115,9 +117,15 @@ async function createUser(
   isAdmin: 0 | 1,
   ip: string | null,
   locale: Locale = "zh-CN",
+  { verify = false, origin = "" }: { verify?: boolean; origin?: string } = {},
 ): Promise<Response> {
-  const r = await createAccount(email, username, password, isAdmin, { cap: true, setupGuard: true });
+  const r = await createAccount(email, username, password, isAdmin, !verify, { cap: true, setupGuard: true });
   if ("status" in r) return err(r.status, translate(locale, r.key));
+  // Unverified sign-ups get no session and no user payload — just a token mailed to them.
+  if (verify) {
+    sendVerification(r.id, r.email, origin, locale);
+    return json({ pendingVerification: true, email: r.email });
+  }
   const token = newSession(r.id, ip);
   return json(
     { id: r.id, email: r.email, username: r.username, is_admin: isAdmin },
@@ -136,7 +144,7 @@ export async function adminCreateUser(
   isAdmin: boolean,
   locale: Locale = "zh-CN",
 ): Promise<Response> {
-  const r = await createAccount(email, username, password, isAdmin ? 1 : 0, { cap: false, setupGuard: false });
+  const r = await createAccount(email, username, password, isAdmin ? 1 : 0, true, { cap: false, setupGuard: false });
   if ("status" in r) return err(r.status, translate(locale, r.key));
   return json({ id: r.id, email: r.email, username: r.username, is_admin: isAdmin ? 1 : 0 });
 }
@@ -148,9 +156,10 @@ export async function register(
   password: string,
   ip: string | null = null,
   locale: Locale = "zh-CN",
+  origin = "",
 ): Promise<Response> {
   if (!allowRegistration()) return err(403, translate(locale, "auth.registrationClosed"));
-  return createUser(email, username, password, 0, ip, locale);
+  return createUser(email, username, password, 0, ip, locale, { verify: mailEnabled(), origin });
 }
 
 /** First-run wizard: creates the one admin account, refused once any user exists. */
@@ -182,6 +191,48 @@ export function setUsername(userId: number, username: string, locale: Locale = "
   return json({ ok: true, username });
 }
 
+const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
+const RESEND_MIN_MS = 60 * 1000;
+
+/** Mints a fresh single-use token (replacing any previous one) and mails the link. */
+function sendVerification(userId: number, email: string, origin: string, locale: Locale): void {
+  const token = crypto.randomUUID().replace(/-/g, "");
+  db.query("UPDATE user SET verify_token = ?, verify_sent_at = ? WHERE id = ?").run(token, Date.now(), userId);
+  const link = `${origin.replace(/\/+$/, "")}/verify?token=${token}`;
+  const { subject, text, html } = verificationEmail(link, locale);
+  // fire-and-forget: a slow/unreachable SMTP server must not stall the request; the user can resend
+  void sendMail(email, subject, text, html).catch((e) => console.error("[mail] verification send failed:", e));
+}
+
+/** Completes verification for a token; single-use, 24h expiry. */
+export function verifyEmail(token: string, locale: Locale = "zh-CN"): Response {
+  const row = db
+    .query<{ id: number; verify_sent_at: number | null }, [string]>(
+      "SELECT id, verify_sent_at FROM user WHERE verify_token = ?",
+    )
+    .get(token);
+  if (!row || !row.verify_sent_at || Date.now() - row.verify_sent_at > VERIFY_TTL_MS) {
+    return err(400, translate(locale, "auth.verifyInvalid"));
+  }
+  db.query("UPDATE user SET email_verified = 1, verify_token = NULL, verify_sent_at = NULL WHERE id = ?").run(row.id);
+  return json({ ok: true });
+}
+
+/** Resends a verification link. Always reports success so it can't be used to probe which emails exist. */
+export async function resendVerification(email: string, locale: Locale = "zh-CN", origin = ""): Promise<Response> {
+  if (!mailEnabled()) return json({ ok: true });
+  email = email.trim().toLowerCase();
+  const row = db
+    .query<{ id: number; email: string; email_verified: number; verify_sent_at: number | null }, [string]>(
+      "SELECT id, email, email_verified, verify_sent_at FROM user WHERE email = ?",
+    )
+    .get(email);
+  if (row && row.email_verified === 0 && (!row.verify_sent_at || Date.now() - row.verify_sent_at > RESEND_MIN_MS)) {
+    sendVerification(row.id, row.email, origin, locale);
+  }
+  return json({ ok: true });
+}
+
 export async function login(
   identifier: string,
   password: string,
@@ -190,12 +241,20 @@ export async function login(
 ): Promise<Response> {
   identifier = identifier.trim().toLowerCase();
   const row = db
-    .query<{ id: number; email: string; username: string | null; is_admin: number; password_hash: string }, [string, string]>(
-      "SELECT id, email, username, is_admin, password_hash FROM user WHERE email = ? OR username = ? COLLATE NOCASE",
+    .query<
+      { id: number; email: string; username: string | null; is_admin: number; password_hash: string; email_verified: number },
+      [string, string]
+    >(
+      "SELECT id, email, username, is_admin, password_hash, email_verified FROM user WHERE email = ? OR username = ? COLLATE NOCASE",
     )
     .get(identifier, identifier);
   if (!row || !(await Bun.password.verify(password, row.password_hash))) {
     return err(401, translate(locale, "auth.invalidCredentials"));
+  }
+  // Forced verification: no session until the address is confirmed. Skipped when mail is off, so a
+  // half-registered account is never permanently locked out if SMTP is later removed.
+  if (mailEnabled() && row.email_verified === 0) {
+    return err(403, translate(locale, "auth.emailUnverified"), "email_unverified");
   }
   const token = newSession(row.id, ip);
   return json(

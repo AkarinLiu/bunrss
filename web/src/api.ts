@@ -141,7 +141,15 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   });
   if (res.status === 401) window.dispatchEvent(new Event("bunrss:unauthorized"));
   const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if (!res.ok) throw new Error((data as { error?: string } | null)?.error ?? res.statusText);
+  if (!res.ok) {
+    const e = new Error((data as { error?: string } | null)?.error ?? res.statusText) as Error & {
+      status?: number;
+      code?: string;
+    };
+    e.status = res.status;
+    e.code = (data as { code?: string } | null)?.code;
+    throw e;
+  }
   return data as T;
 }
 
@@ -164,7 +172,9 @@ export const api = {
   me: () => req<User>("GET", "/auth/me"),
   login: (identifier: string, password: string) => req<User>("POST", "/auth/login", { email: identifier, password }),
   register: (email: string, username: string, password: string) =>
-    req<User>("POST", "/auth/register", { email, username, password }),
+    req<User | { pendingVerification: true; email: string }>("POST", "/auth/register", { email, username, password }),
+  verifyEmail: (token: string) => req<{ ok: true }>("POST", "/auth/verify", { token }),
+  resendVerification: (email: string) => req<{ ok: true }>("POST", "/auth/resend", { email }),
   setUsername: (username: string) => req<{ ok: true; username: string }>("PATCH", "/auth/me", { username }),
   logout: () => req<{ ok: true }>("POST", "/auth/logout"),
 

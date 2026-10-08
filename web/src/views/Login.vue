@@ -14,19 +14,48 @@ const username = ref("");
 const password = ref("");
 const mode = ref<"login" | "register">("login");
 const error = ref("");
+const notice = ref("");
 const busy = ref(false);
+
+function switchMode() {
+  mode.value = mode.value === "login" ? "register" : "login";
+  error.value = "";
+  notice.value = "";
+}
 
 async function submit() {
   error.value = "";
+  notice.value = "";
   busy.value = true;
   try {
     if (mode.value === "login") await auth.login(identifier.value, password.value);
     else await auth.register(identifier.value, username.value, password.value);
+    if (auth.pendingEmail) {
+      notice.value = t("auth.verifySent", { email: auth.pendingEmail });
+      return;
+    }
     router.push((route.query.next as string) || "/");
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    if ((e as { code?: string }).code === "email_unverified") {
+      // we can only resend to an email, not a bare username
+      if (identifier.value.includes("@")) auth.pendingEmail = identifier.value;
+      notice.value = t("auth.verifySent", { email: identifier.value });
+    } else {
+      error.value = e instanceof Error ? e.message : String(e);
+    }
   } finally {
     busy.value = false;
+  }
+}
+
+async function resend() {
+  error.value = "";
+  const email = auth.pendingEmail || identifier.value;
+  try {
+    await auth.resend(email);
+    notice.value = t("auth.verifySent", { email });
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
   }
 }
 </script>
@@ -52,10 +81,12 @@ async function submit() {
         :autocomplete="mode === 'login' ? 'current-password' : 'new-password'"
       />
       <p v-if="error" class="error small">{{ error }}</p>
+      <p v-if="notice" class="ok small">{{ notice }}</p>
+      <button v-if="auth.pendingEmail" type="button" class="link" @click="resend">{{ t("auth.resend") }}</button>
       <button class="primary" type="submit" :disabled="busy">
         {{ mode === "login" ? t("auth.login") : t("auth.register") }}
       </button>
-      <button type="button" class="link" v-if="auth.allowRegistration" @click="mode = mode === 'login' ? 'register' : 'login'">
+      <button type="button" class="link" v-if="auth.allowRegistration" @click="switchMode">
         {{ mode === "login" ? t("auth.toRegister") : t("auth.toLogin") }}
       </button>
       <LocaleSelect />
@@ -91,6 +122,9 @@ p {
 }
 .error {
   color: var(--danger);
+}
+.ok {
+  color: var(--accent);
 }
 button.link {
   background: none;

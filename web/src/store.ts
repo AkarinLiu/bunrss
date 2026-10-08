@@ -2,7 +2,14 @@ import { defineStore } from "pinia";
 import { api, type Article, type ArticleDetail, type ArticleTag, type Category, type Feed, type LimitState, type Tag, type User } from "./api";
 
 export const useAuth = defineStore("auth", {
-  state: () => ({ user: null as User | null, needsSetup: false, allowRegistration: true, ready: false }),
+  state: () => ({
+    user: null as User | null,
+    needsSetup: false,
+    allowRegistration: true,
+    ready: false,
+    // set while a sign-up (or unverified login) is awaiting email confirmation
+    pendingEmail: "",
+  }),
   actions: {
     async boot() {
       try {
@@ -18,13 +25,25 @@ export const useAuth = defineStore("auth", {
     },
     async setup(email: string, username: string, password: string) {
       this.user = await api.setup(email, username, password);
+      this.pendingEmail = "";
       this.needsSetup = false;
     },
     async login(identifier: string, password: string) {
       this.user = await api.login(identifier, password);
+      this.pendingEmail = "";
     },
     async register(email: string, username: string, password: string) {
-      this.user = await api.register(email, username, password);
+      const res = await api.register(email, username, password);
+      if ("pendingVerification" in res) {
+        this.pendingEmail = res.email;
+        return;
+      }
+      this.pendingEmail = "";
+      this.user = res;
+    },
+    async resend(email: string) {
+      await api.resendVerification(email);
+      this.pendingEmail = email;
     },
     async setUsername(username: string) {
       const res = await api.setUsername(username);

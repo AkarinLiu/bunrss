@@ -10,7 +10,9 @@ const dbFile = join(tmpdir(), `bunrss-e2e-${Date.now()}.db`);
 
 // PORT=0 -> the OS picks a free port; we read it back from the server's startup line
 const server = Bun.spawn(["bun", "server/index.ts"], {
-  env: { ...process.env, DATABASE_URL: dbFile, PORT: "0" },
+  // SMTP_HOST is forced empty (after the spread) so a developer's .env can't enable forced
+  // email verification and break the setup-wizard flow below.
+  env: { ...process.env, DATABASE_URL: dbFile, PORT: "0", SMTP_HOST: "" },
   stdout: "pipe",
   stderr: "inherit",
 });
