@@ -1,0 +1,46 @@
+# Runs bunrss straight from Bun's official image.
+# Only source paths are bind-mounted; node_modules and the SQLite database live in named
+# volumes, so the container never writes into (or locks files in) your host checkout.
+# For a self-contained production image instead, build the Dockerfile: docker build -t bunrss .
+services:
+  bunrss:
+    image: oven/bun:1.4
+    working_dir: /app
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${BUNRSS_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: /app/data/bunrss.db
+      PORT: "3000"
+      # the `playwright` dev dependency must not download browsers on install
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    volumes:
+      - ./server:/app/server
+      - ./migrations:/app/migrations
+      - ./web:/app/web
+      - ./package.json:/app/package.json
+      - ./bun.lock:/app/bun.lock
+      - ./tsconfig.json:/app/tsconfig.json
+      # container-local, never touch the host's node_modules or ./data
+      - ./node_modules:/app/node_modules
+      - ./data:/app/data
+    # list form + `sh -c`: an array of shell snippets is passed to bun as separate argv tokens
+    command: ["sh", "-c", "bun install && bun run build && bun run start"]
+    healthcheck:
+      # the Debian-based bun image ships no curl/wget, so probe with bun itself
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://localhost:3000/api/setup/status').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # ponytail: single replica only — SQLite is one-writer and Bun.cron runs per process.
+    # Move to Postgres before scaling out.
+
+volumes:
+  bunrss-node_modules:
+  bunrss-data:

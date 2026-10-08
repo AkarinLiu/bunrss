@@ -1,0 +1,12 @@
+# keep the build context small and never ship local state
+node_modules
+web/dist
+data
+
+# local-only files
+.git
+.gitignore
+.env
+.env.*
+*.md
+e2e.setup.ts

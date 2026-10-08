@@ -1,0 +1,78 @@
+:root {
+  --bg: #ffffff;
+  --bg-alt: #f6f7f9;
+  --bg-hover: #eceef2;
+  --border: #e2e5ea;
+  --text: #1b1f27;
+  --text-dim: #6b7280;
+  --accent: #3b82f6;
+  --accent-soft: #dbeafe;
+  --star: #f59e0b;
+  --danger: #dc2626;
+  color-scheme: light;
+}
+:root.dark {
+  --bg: #15181e;
+  --bg-alt: #1b1f27;
+  --bg-hover: #262c37;
+  --border: #2b3240;
+  --text: #e6e9ef;
+  --text-dim: #9aa4b2;
+  --accent: #60a5fa;
+  --accent-soft: #1e3a8a;
+  --star: #fbbf24;
+  --danger: #f87171;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+#app { height: 100dvh; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover { background: var(--bg-hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { filter: brightness(1.08); }
+button.icon { background: none; border: none; padding: 2px 4px; line-height: 1; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+input, select {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+input:focus, select:focus { outline: 2px solid var(--accent-soft); }
+
+.dim { color: var(--text-dim); }
+.small { font-size: 12px; }
+.row { display: flex; align-items: center; gap: 6px; }
+.spacer { flex: 1; }
+.star { color: var(--star); }
+.badge {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 0 6px;
+  min-width: 18px;
+  text-align: center;
+}
