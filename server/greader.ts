@@ -10,6 +10,7 @@ type Env = { Variables: { userId: number; email: string; token: string } };
 
 const READING_LIST = "user/-/state/com.google/reading-list";
 const READ = "user/-/state/com.google/read";
+const UNREAD = "user/-/state/com.google/unread";
 const STARRED = "user/-/state/com.google/starred";
 const TRACKING_READ = "user/-/state/com.google/tracking-read";
 
@@ -38,8 +39,20 @@ const itemId = (id: number) => "tag:google.com,2005:reader/item/" + id.toString(
 
 function parseItemId(raw: string): number | null {
   const last = raw.slice(raw.lastIndexOf("/") + 1);
-  const n = parseInt(last, 16);
+  // Item ids come in two forms: "short" signed base-10 and "long"
+  // `tag:google.com,2005:reader/item/<16 hex, zero-padded>`. itemRefs emits short,
+  // but every method accepts either. Ambiguity resolves the way FreshRSS does it:
+  // all-digits (and not zero-padded) is decimal, anything else is hex.
+  const n = /^[1-9]\d*$/.test(last) ? Number(last) : parseInt(last, 16);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * `ot`/`nt` are epoch seconds per the Google Reader spec. Some looser clients send
+ * milliseconds or microseconds, so normalize to milliseconds before comparing.
+ */
+function timestampMs(v: number): number {
+  return v >= 1e14 ? v / 1000 : v >= 1e11 ? v : v * 1000;
 }
 
 const labelId = (name: string) => "user/-/label/" + name;
@@ -63,9 +76,11 @@ interface StreamOpts {
   streamId: string;
   include: string[];
   exclude: string[];
-  olderThan?: number; // unix seconds
+  since?: number; // `ot`: only items newer than this (epoch seconds)
+  until?: number; // `nt`: only items older than this (epoch seconds)
   limit: number;
   offset: number;
+  order: "ASC" | "DESC";
 }
 
 /** Shared WHERE builder for stream/contents + stream/items/ids. */
@@ -81,14 +96,23 @@ function streamWhere(userId: number, o: StreamOpts): { clause: string; params: (
     params.push(userId, labelName(s));
   } else if (s.endsWith("/starred")) {
     where.push("COALESCE(st.starred, 0) = 1");
+  } else if (s.endsWith("/unread")) {
+    where.push("COALESCE(st.read, 0) = 0");
+  } else if (s.endsWith("/read")) {
+    where.push("COALESCE(st.read, 0) = 1");
   }
   if (o.include.includes(STARRED)) where.push("COALESCE(st.starred, 0) = 1");
   if (o.include.includes(READ)) where.push("COALESCE(st.read, 0) = 1");
+  if (o.include.includes(UNREAD)) where.push("COALESCE(st.read, 0) = 0");
   if (o.exclude.includes(STARRED)) where.push("COALESCE(st.starred, 0) = 0");
   if (o.exclude.includes(READ)) where.push("COALESCE(st.read, 0) = 0");
-  if (o.olderThan) {
-    where.push("a.published_at < ?");
-    params.push(o.olderThan * 1000);
+  if (o.since) {
+    where.push("a.published_at >= ?");
+    params.push(timestampMs(o.since));
+  }
+  if (o.until) {
+    where.push("a.published_at <= ?");
+    params.push(timestampMs(o.until));
   }
   return { clause: where.length ? "WHERE " + where.join(" AND ") : "", params };
 }
@@ -100,13 +124,18 @@ const FROM = `FROM article a
 
 function streamOpts(c: { req: { query: (k: string) => string | undefined; queries: (k: string) => string[] | undefined } }, streamId: string): StreamOpts {
   const n = Number(c.req.query("n"));
+  const ot = c.req.query("ot");
+  const nt = c.req.query("nt");
   return {
     streamId,
     include: splitAllQuery(c.req.queries("it")),
     exclude: splitAllQuery(c.req.queries("xt")),
-    olderThan: c.req.query("ot") ? Number(c.req.query("ot")) : undefined,
-    limit: Number.isFinite(n) && n > 0 ? Math.min(n, 200) : 20,
+    since: ot ? Number(ot) : undefined,
+    until: nt ? Number(nt) : undefined,
+    // Google Reader allows up to 10,000; clients like Capy request the whole stream in one page.
+    limit: Number.isFinite(n) && n > 0 ? Math.min(n, 10000) : 20,
     offset: Number(c.req.query("c")) > 0 ? Number(c.req.query("c")) : 0,
+    order: c.req.query("r") === "o" ? "ASC" : "DESC",
   };
 }
 
@@ -209,7 +238,8 @@ greader.get("/reader/api/0/subscription/list", (c) => {
   const rows = db
     .query<any, [number]>(
       `SELECT f.feed_url, f.site_url, COALESCE(sub.custom_title, f.title, f.feed_url) AS title,
-              sub.id AS sortid, c.name AS category_name
+              sub.id AS sortid, c.name AS category_name,
+              (SELECT MAX(a.published_at) FROM article a WHERE a.feed_id = f.id) AS newest
        FROM subscription sub JOIN feed f ON f.id = sub.feed_id
        LEFT JOIN category c ON c.id = sub.category_id
        WHERE sub.user_id = ? ORDER BY title COLLATE NOCASE`,
@@ -222,6 +252,7 @@ greader.get("/reader/api/0/subscription/list", (c) => {
       url: r.feed_url,
       sortid: r.sortid.toString(16).padStart(8, "0"),
       htmlUrl: r.site_url ?? "",
+      firstitemmsec: String(r.newest ?? 0),
       categories: r.category_name ? [{ id: labelId(r.category_name), label: r.category_name }] : [],
     })),
   });
@@ -280,10 +311,21 @@ greader.post("/reader/api/0/subscription/quickadd", async (c) => {
 // --- tags ---------------------------------------------------------------
 
 greader.get("/reader/api/0/tag/list", (c) => {
+  const userId = c.get("userId");
   const cats = db
-    .query<{ name: string }, [number]>("SELECT name FROM category WHERE user_id = ? ORDER BY name COLLATE NOCASE")
-    .all(c.get("userId"));
-  return c.json({ tags: [{ id: STARRED }, ...cats.map((x) => ({ id: labelId(x.name) }))] });
+    .query<{ name: string; unread: number }, [number, number, number]>(
+      `SELECT c.name,
+              (SELECT COUNT(*) FROM article a
+                 JOIN subscription sub ON sub.feed_id = a.feed_id AND sub.user_id = ?
+                 LEFT JOIN article_state st ON st.article_id = a.id AND st.user_id = ?
+                 WHERE sub.category_id = c.id AND COALESCE(st.read, 0) = 0) AS unread
+       FROM category c WHERE c.user_id = ? ORDER BY c.name COLLATE NOCASE`,
+    )
+    .all(userId, userId, userId);
+  // `type: "folder"` tells clients (Inoreader, Capy…) these are folders, not article tags.
+  return c.json({
+    tags: [{ id: STARRED }, { id: READING_LIST }, ...cats.map((x) => ({ id: labelId(x.name), type: "folder", unread_count: x.unread }))],
+  });
 });
 
 // --- unread -------------------------------------------------------------
@@ -335,7 +377,7 @@ function contentsResponse(c: any, streamId: string): Response {
               f.feed_url, f.site_url, COALESCE(sub.custom_title, f.title, f.feed_url) AS feed_title,
               COALESCE(st.read, 0) AS read, COALESCE(st.starred, 0) AS starred
        ${FROM} ${clause}
-       ORDER BY a.published_at DESC LIMIT ? OFFSET ?`,
+       ORDER BY a.published_at ${o.order}, a.id ${o.order} LIMIT ? OFFSET ?`,
     )
     .all(userId, userId, ...params, o.limit + 1, o.offset);
   const hasMore = rows.length > o.limit;
@@ -365,13 +407,14 @@ function itemsContents(c: any, p: URLSearchParams): Response {
     .filter((n): n is number => n !== null);
   const updated = Math.floor(now() / 1000);
   if (!ids.length) return c.json({ id: READING_LIST, updated, items: [] });
+  const order = c.req.query("r") === "o" ? "ASC" : "DESC";
   const marks = ids.map(() => "?").join(",");
   const rows = db
     .query<ItemRow, any[]>(
       `SELECT a.id, a.title, a.link, a.author, a.summary, a.content, a.published_at, a.fetched_at,
               f.feed_url, f.site_url, COALESCE(sub.custom_title, f.title, f.feed_url) AS feed_title,
               COALESCE(st.read, 0) AS read, COALESCE(st.starred, 0) AS starred
-       ${FROM} WHERE a.id IN (${marks}) ORDER BY a.published_at DESC`,
+       ${FROM} WHERE a.id IN (${marks}) ORDER BY a.published_at ${order}`,
     )
     .all(userId, userId, ...ids);
   return c.json({ id: READING_LIST, updated, items: rows.map(itemJson) });
@@ -384,17 +427,18 @@ greader.get("/reader/api/0/stream/items/ids", (c) => {
   const o = streamOpts(c as any, c.req.query("s") || READING_LIST);
   const { clause, params } = streamWhere(userId, o);
   const rows = db
-    .query<{ id: number; published_at: number | null; fetched_at: number }, any[]>(
-      `SELECT a.id, a.published_at, a.fetched_at ${FROM} ${clause}
-       ORDER BY a.published_at DESC LIMIT ? OFFSET ?`,
+    .query<{ id: number; published_at: number | null; fetched_at: number; feed_url: string }, any[]>(
+      `SELECT a.id, a.published_at, a.fetched_at, f.feed_url ${FROM} ${clause}
+       ORDER BY a.published_at ${o.order}, a.id ${o.order} LIMIT ? OFFSET ?`,
     )
     .all(userId, userId, ...params, o.limit + 1, o.offset);
   const hasMore = rows.length > o.limit;
+  // `id` is the spec's "short" signed base-10 form; clients convert it to the long form
+  // themselves before calling stream/items/contents. Emitting the long form here breaks Capy.
   const itemRefs = (hasMore ? rows.slice(0, o.limit) : rows).map((r) => ({
-    id: itemId(r.id),
+    id: String(r.id),
     timestampUsec: String((r.published_at ?? r.fetched_at) * 1000),
-    directStreamIds: [],
-    timestamp: String(r.published_at ?? r.fetched_at),
+    directStreamIds: ["feed/" + r.feed_url],
   }));
   return c.json({ itemRefs, ...(hasMore ? { continuation: String(o.offset + o.limit) } : {}) });
 });
@@ -423,7 +467,7 @@ greader.post("/reader/api/0/mark-all-as-read", async (c) => {
   const userId = c.get("userId");
   const p = await form(c.req.raw);
   const s = p.get("s") ?? "";
-  const ts = p.get("ts") ? Number(p.get("ts")) * 1000 : null;
+  const ts = p.get("ts") ? timestampMs(Number(p.get("ts"))) : null;
   const feedUrl = s.startsWith("feed/") ? s.slice("feed/".length) : null;
   const label = s.includes("/label/") ? labelName(s) : null;
   db.query(

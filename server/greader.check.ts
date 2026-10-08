@@ -1,6 +1,8 @@
 // Self-check for the Google Reader API compatibility quirks that broke native clients:
-//  - item ids are the standard `tag:google.com,2005:reader/item/<hex>` form and contain commas,
-//    so the `i` param must NOT be comma-split;
+//  - itemRefs ids use the spec's "short" (decimal) form, while stream/items/contents and
+//    edit-tag accept both that and the `tag:google.com,2005:reader/item/<hex>` long form;
+//  - `ot`/`nt` bound the stream by time (`ot` is the oldest item of interest, a lower bound);
+//  - `r=o` sorts oldest-first and `n` may go up to 10,000;
 //  - RSS Guard fetches article bodies via POST stream/items/contents;
 //  - stream/contents/<streamId> is a path route (mounted under /api/greader).
 // Runs against a throwaway DB, no server needed: bun run server/greader.check.ts
@@ -48,16 +50,22 @@ const login = await mounted.fetch(
 );
 check(login.status === 200 && (await login.text()).includes("Auth=" + token), "/api/greader mount + ClientLogin");
 
-// 1. ids come back in full tag form (commas intact)
+// 1. itemRefs ids are the spec's short (decimal) form, and carry direct stream ids
 let res = await call("/reader/api/0/stream/items/ids?s=" + encodeURIComponent("feed/https://ex.com/feed"));
 let j: any = await res.json();
-check(j.itemRefs.length === 1 && j.itemRefs[0].id === itemId, "stream/items/ids returns the full tag id");
+check(j.itemRefs.length === 1 && j.itemRefs[0].id === String(aid), "stream/items/ids returns the short (decimal) id");
+check(j.itemRefs[0].directStreamIds.includes("feed/https://ex.com/feed"), "itemRefs carry directStreamIds");
 
-// 2. bodies by id (RSS Guard's path)
+// 2. bodies by id (RSS Guard's path) — the long form still resolves
 res = await call("/reader/api/0/stream/items/contents", form, "POST", "i=" + encodeURIComponent(itemId));
 j = await res.json();
 check(j.items.length === 1 && j.items[0].id === itemId, "stream/items/contents resolves the comma-containing id");
 check(j.items[0].summary.content.includes("Body") && j.items[0].canonical[0].href === "https://ex.com/1", "contents carry body + canonical href");
+
+// 2b. so does the short (decimal) form clients send back after itemRefs
+res = await call("/reader/api/0/stream/items/contents", form, "POST", "i=" + aid);
+j = await res.json();
+check(j.items.length === 1 && j.items[0].id === itemId, "stream/items/contents resolves the short (decimal) id");
 
 // 3. path-form stream scoped to the feed (mount prefix must not eat the stream id)
 res = await call("/reader/api/0/stream/contents/" + encodeURIComponent("feed/https://ex.com/feed"));
@@ -89,6 +97,33 @@ res = await call(
 );
 const numeric = db.query<{ read: number }, [number, number]>("SELECT read FROM article_state WHERE user_id = ? AND article_id = ?").get(uid, aid);
 check(res.status === 200 && numeric?.read === 1, "numeric user id tags are normalized");
+
+// 7. ot is a lower bound (items newer than it), nt an upper bound — client incremental
+//    sync sends ot=<last seen time> and must get the newer items back.
+const olderPub = now - 7 * 86_400_000;
+const newerPub = now + 3_600_000;
+const insertArticle = db.query("INSERT INTO article (feed_id, guid, title, link, published_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?)");
+insertArticle.run(fid, "g0", "Old", "https://ex.com/0", olderPub, olderPub);
+insertArticle.run(fid, "g2", "New", "https://ex.com/2", newerPub, newerPub);
+const olderID = db.query<{ id: number }, []>("SELECT id FROM article WHERE guid = 'g0'").get()!.id;
+const newerID = db.query<{ id: number }, []>("SELECT id FROM article WHERE guid = 'g2'").get()!.id;
+const enc = encodeURIComponent("feed/https://ex.com/feed");
+const sinceOt = Math.floor((now + 1000) / 1000);
+const untilNt = Math.floor((now - 1000) / 1000);
+res = await call(`/reader/api/0/stream/items/ids?s=${enc}&ot=${sinceOt}`);
+j = await res.json();
+check(j.itemRefs.length === 1 && j.itemRefs[0].id === String(newerID), "ot is a lower bound (returns only newer items)");
+res = await call(`/reader/api/0/stream/items/ids?s=${enc}&nt=${untilNt}`);
+j = await res.json();
+check(j.itemRefs.length === 1 && j.itemRefs[0].id === String(olderID), "nt is an upper bound (returns only older items)");
+
+// 8. r=o reverses the sort; n above the old 200 cap fits in a single page
+res = await call(`/reader/api/0/stream/contents/${enc}?r=o`);
+j = await res.json();
+check(j.items[0].title === "Old", "r=o returns oldest first");
+res = await call(`/reader/api/0/stream/items/ids?s=${enc}&n=5000`);
+j = await res.json();
+check(j.itemRefs.length === 3 && j.continuation === undefined, "n=5000 returns every item in one page");
 
 console.log(failed ? `\n${failed} check(s) failed` : "\nall greader checks passed");
 process.exit(failed ? 1 : 0);
