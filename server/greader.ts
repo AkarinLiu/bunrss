@@ -77,8 +77,8 @@ interface StreamOpts {
   streamId: string;
   include: string[];
   exclude: string[];
-  since?: number; // `ot`: only items newer than this (epoch seconds)
-  until?: number; // `nt`: only items older than this (epoch seconds)
+  since?: number; // `ot`: only items ingested at/after this time (epoch seconds)
+  until?: number; // `nt`: only items ingested at/before this time (epoch seconds)
   limit: number;
   offset: number;
   order: "ASC" | "DESC";
@@ -107,12 +107,14 @@ function streamWhere(userId: number, o: StreamOpts): { clause: string; params: (
   if (o.include.includes(UNREAD)) where.push("COALESCE(st.read, 0) = 0");
   if (o.exclude.includes(STARRED)) where.push("COALESCE(st.starred, 0) = 0");
   if (o.exclude.includes(READ)) where.push("COALESCE(st.read, 0) = 0");
+  // `ot`/`nt` bound the item's appearance time (when the aggregator ingested it), not the
+  // article's own publish date. Clients derive their incremental cursor from `crawlTimeMsec`.
   if (o.since) {
-    where.push("a.published_at >= ?");
+    where.push("a.fetched_at >= ?");
     params.push(timestampMs(o.since));
   }
   if (o.until) {
-    where.push("a.published_at <= ?");
+    where.push("a.fetched_at <= ?");
     params.push(timestampMs(o.until));
   }
   return { clause: where.length ? "WHERE " + where.join(" AND ") : "", params };
@@ -160,7 +162,7 @@ interface ItemRow {
 }
 
 function itemJson(a: ItemRow) {
-  const ts = a.published_at ?? a.fetched_at;
+  const publishedAt = a.published_at ?? a.fetched_at;
   // Fluent Reader dereferences canonical[0].href unconditionally, so always emit one entry.
   const link = a.link ?? a.site_url ?? "";
   const body = a.content ?? a.summary ?? "";
@@ -170,9 +172,10 @@ function itemJson(a: ItemRow) {
   if (a.starred) categories.push(STARRED);
   return {
     id: itemId(a.id),
+    // `timestampUsec`/`crawlTimeMsec` are the ingestion time; `published` is the article date.
     crawlTimeMsec: String(a.fetched_at),
-    timestampUsec: String(ts * 1000),
-    published: Math.floor(ts / 1000),
+    timestampUsec: String(a.fetched_at * 1000),
+    published: Math.floor(publishedAt / 1000),
     title: a.title ?? "",
     canonical: [{ href: link }],
     alternate: [{ href: link, type: "text/html" }],
@@ -252,7 +255,7 @@ greader.get("/reader/api/0/subscription/list", (c) => {
     .query<any, [number]>(
       `SELECT f.feed_url, f.site_url, COALESCE(sub.custom_title, f.title, f.feed_url) AS title,
               sub.id AS sortid, c.name AS category_name,
-              (SELECT MAX(a.published_at) FROM article a WHERE a.feed_id = f.id) AS newest
+              (SELECT MAX(a.fetched_at) FROM article a WHERE a.feed_id = f.id) AS newest
        FROM subscription sub JOIN feed f ON f.id = sub.feed_id
        LEFT JOIN category c ON c.id = sub.category_id
        WHERE sub.user_id = ? ORDER BY title COLLATE NOCASE`,
@@ -349,7 +352,7 @@ greader.get("/reader/api/0/unread-count", (c) => {
   const userId = c.get("userId");
   const feeds = db
     .query<{ feed_url: string; n: number; newest: number | null }, [number, number]>(
-      `SELECT f.feed_url, COUNT(*) n, MAX(a.published_at) newest
+      `SELECT f.feed_url, COUNT(*) n, MAX(a.fetched_at) newest
        FROM article a
        JOIN subscription sub ON sub.feed_id = a.feed_id AND sub.user_id = ?
        JOIN feed f ON f.id = a.feed_id
@@ -359,7 +362,7 @@ greader.get("/reader/api/0/unread-count", (c) => {
     .all(userId, userId);
   const labels = db
     .query<{ name: string; n: number; newest: number | null }, [number, number]>(
-      `SELECT c.name, COUNT(*) n, MAX(a.published_at) newest
+      `SELECT c.name, COUNT(*) n, MAX(a.fetched_at) newest
        FROM article a
        JOIN subscription sub ON sub.feed_id = a.feed_id AND sub.user_id = ?
        JOIN category c ON c.id = sub.category_id
@@ -392,7 +395,7 @@ function contentsResponse(c: any, streamId: string): Response {
               f.feed_url, f.site_url, COALESCE(sub.custom_title, f.title, f.feed_url) AS feed_title,
               COALESCE(st.read, 0) AS read, COALESCE(st.starred, 0) AS starred
        ${FROM} ${clause}
-       ORDER BY a.published_at ${o.order}, a.id ${o.order} LIMIT ? OFFSET ?`,
+       ORDER BY a.fetched_at ${o.order}, a.id ${o.order} LIMIT ? OFFSET ?`,
     )
     .all(userId, userId, ...params, o.limit + 1, o.offset);
   const hasMore = rows.length > o.limit;
@@ -429,7 +432,7 @@ function itemsContents(c: any, p: URLSearchParams): Response {
       `SELECT a.id, a.title, a.link, a.author, a.summary, a.content, a.published_at, a.fetched_at,
               f.feed_url, f.site_url, COALESCE(sub.custom_title, f.title, f.feed_url) AS feed_title,
               COALESCE(st.read, 0) AS read, COALESCE(st.starred, 0) AS starred
-       ${FROM} WHERE a.id IN (${marks}) ORDER BY a.published_at ${order}`,
+       ${FROM} WHERE a.id IN (${marks}) ORDER BY a.fetched_at ${order}`,
     )
     .all(userId, userId, ...ids);
   return c.json({ id: READING_LIST, updated, items: rows.map(itemJson) });
@@ -444,7 +447,7 @@ greader.get("/reader/api/0/stream/items/ids", (c) => {
   const rows = db
     .query<{ id: number; published_at: number | null; fetched_at: number; feed_url: string }, any[]>(
       `SELECT a.id, a.published_at, a.fetched_at, f.feed_url ${FROM} ${clause}
-       ORDER BY a.published_at ${o.order}, a.id ${o.order} LIMIT ? OFFSET ?`,
+       ORDER BY a.fetched_at ${o.order}, a.id ${o.order} LIMIT ? OFFSET ?`,
     )
     .all(userId, userId, ...params, o.limit + 1, o.offset);
   const hasMore = rows.length > o.limit;

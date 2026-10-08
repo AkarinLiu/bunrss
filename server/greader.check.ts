@@ -125,6 +125,17 @@ res = await call(`/reader/api/0/stream/items/ids?s=${enc}&n=5000`);
 j = await res.json();
 check(j.itemRefs.length === 3 && j.continuation === undefined, "n=5000 returns every item in one page");
 
+// 8b. `ot` bounds ingestion time, not the published date: a feed that backfills an
+//     older-dated article must still be returned to the client's incremental sync.
+db.query("INSERT INTO feed (feed_url, title) VALUES (?, ?)").run("https://back.example/rss", "Backfill");
+const bfid = db.query<{ id: number }, []>("SELECT id FROM feed WHERE feed_url = 'https://back.example/rss'").get()!.id;
+db.query("INSERT INTO subscription (user_id, feed_id, created_at) VALUES (?, ?, ?)").run(uid, bfid, now);
+db.query("INSERT INTO article (feed_id, guid, title, link, published_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?)")
+  .run(bfid, "bf1", "Backfilled", "https://back.example/1", now - 30 * 86_400_000, now + 60_000);
+res = await call(`/reader/api/0/stream/contents/${encodeURIComponent("feed/https://back.example/rss")}?ot=${sinceOt}`);
+j = await res.json();
+check(j.items.length === 1 && j.items[0].title === "Backfilled", "ot bounds ingestion time, so backfilled items still sync");
+
 // 9. subscribing through the GReader API primes the feed immediately, so the client's
 //    follow-up sync sees the articles instead of waiting for the background cron.
 const realFetch = globalThis.fetch;
