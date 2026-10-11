@@ -10,11 +10,7 @@ services:
     restart: unless-stopped
     ports:
       - "${BUNRSS_PORT:-3000}:3000"
-    environment:
-      DATABASE_URL: /app/data/bunrss.db
-      PORT: "3000"
-      # the `playwright` dev dependency must not download browsers on install
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    env_file: ./.env
     volumes:
       - ./server:/app/server
       - ./migrations:/app/migrations
