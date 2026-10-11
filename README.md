@@ -150,3 +150,7 @@ e2e.setup.ts   setup 向导 + 管理后台的无头浏览器回归检查
 - 管理员只是多一个 `is_admin` 标记 + `/admin` 页面；注册的账号都是普通用户。是否允许注册由 `setting.allow_registration` 控制（默认开启），注册总数由 `setting.max_users` 控制（0 = 不限），都在 `/admin` 的「配额限制」里切换。关闭 / 超限后 `/api/auth/register` 返回 403，登录页也隐藏注册入口（setup 向导不受影响，首个管理员始终可建）。用户数校验在 `server/auth.ts` 的事务内，与邮箱 / 用户名查重同批执行，避免并发超额。
 - 用户名（`user.username`）可空但唯一且不区分大小写（`CREATE UNIQUE INDEX ... (username COLLATE NOCASE)`，NULL 互不冲突）；大小写照原样存储，仅查询与索引用 `COLLATE NOCASE`。登录按 `email = ? OR username = ? COLLATE NOCASE` 匹配。`setUsername` 只允许给空用户名账号补设一次，已有用户名则返回 409，即用户名不可更改。
 - 标签是 `tag`（每用户、名称 `COLLATE NOCASE` 唯一）+ `article_tag`（多对多）两张表，删除用户 / 文章 / 标签都级联清理。所有标签读写和「文章归属」校验集中在 `server/library.ts`，`setArticleState` 与 `addArticleTag` 共用同一个 `ownsArticle` 守卫，不重复实现。
+
+## 项目地址
+
+https://github.com/AkarinLiu/bunrss
