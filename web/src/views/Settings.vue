@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type ApiToken, type Feed, type WatchRule } from "../api";
 import { useAuth, useFeeds, useUi, type Theme } from "../store";
@@ -143,6 +143,8 @@ const ruleInclude = ref<string[]>([]);
 const ruleExclude = ref<string[]>([]);
 const includeDraft = ref("");
 const excludeDraft = ref("");
+const includeInput = ref<HTMLInputElement | null>(null);
+const excludeInput = ref<HTMLInputElement | null>(null);
 const ruleMode = ref<"any" | "all">("any");
 
 const splitWords = (raw: string | null) =>
@@ -157,16 +159,20 @@ function addWords(list: string[], raw: string): void {
     if (!list.some((w) => w.toLowerCase() === word.toLowerCase())) list.push(word);
 }
 
-function addInclude(e: KeyboardEvent) {
+async function addInclude(e: KeyboardEvent) {
   if (e.isComposing) return; // Enter that confirms an IME composition must not add a chip
   addWords(ruleInclude.value, includeDraft.value);
   includeDraft.value = "";
+  await nextTick(); // keep typing without clicking the input again
+  includeInput.value?.focus();
 }
 
-function addExclude(e: KeyboardEvent) {
+async function addExclude(e: KeyboardEvent) {
   if (e.isComposing) return;
   addWords(ruleExclude.value, excludeDraft.value);
   excludeDraft.value = "";
+  await nextTick();
+  excludeInput.value?.focus();
 }
 
 function resetRuleForm() {
@@ -193,7 +199,15 @@ function editRule(rule: WatchRule) {
 }
 
 async function saveRule(f: Feed) {
-  if (!ruleInclude.value.length) return;
+  // A word still sitting in the input but not confirmed with Enter must not be silently dropped.
+  addWords(ruleInclude.value, includeDraft.value);
+  addWords(ruleExclude.value, excludeDraft.value);
+  includeDraft.value = "";
+  excludeDraft.value = "";
+  if (!ruleInclude.value.length) {
+    alert(t("settings.watchIncludeRequired"));
+    return;
+  }
   const payload = {
     includeWords: ruleInclude.value.join(", "),
     excludeWords: ruleExclude.value.length ? ruleExclude.value.join(", ") : null,
@@ -399,6 +413,7 @@ async function logout() {
                     </button>
                   </span>
                   <input
+                    ref="includeInput"
                     v-model="includeDraft"
                     :placeholder="t('settings.watchIncludePlaceholder')"
                     @keydown.enter.prevent="addInclude"
@@ -415,6 +430,7 @@ async function logout() {
                     </button>
                   </span>
                   <input
+                    ref="excludeInput"
                     v-model="excludeDraft"
                     :placeholder="t('settings.watchExcludePlaceholder')"
                     @keydown.enter.prevent="addExclude"
@@ -430,7 +446,7 @@ async function logout() {
               </label>
               <div class="row">
                 <button class="small primary" @click="saveRule(f)">
-                  {{ editingRule === null ? t("common.add") : t("common.save") }}
+                  {{ editingRule === null ? t("settings.addRule") : t("common.save") }}
                 </button>
                 <button v-if="editingRule !== null" class="small" @click="resetRuleForm">{{ t("common.cancel") }}</button>
               </div>
