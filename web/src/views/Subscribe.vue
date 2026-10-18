@@ -112,7 +112,7 @@ onMounted(async () => {
         </div>
       </template>
 
-      <router-link to="/" class="small">{{ t("common.backToReader") }}</router-link>
+      <router-link to="/" class="small"><i class="fa-solid fa-arrow-left" /> {{ t("common.backToReader") }}</router-link>
     </div>
   </div>
 </template>

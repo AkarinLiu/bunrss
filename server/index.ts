@@ -33,7 +33,7 @@ const requireAdmin = (req: Request): User | Response => {
 // ---------------------------------------------------------------- feeds
 
 function listFeeds(userId: number) {
-  return db
+  const feeds = db
     .query<any, [number]>(
       `SELECT sub.id AS subscription_id, f.id AS feed_id,
               COALESCE(sub.custom_title, f.title, f.feed_url) AS title,
@@ -47,6 +47,21 @@ function listFeeds(userId: number) {
        ORDER BY title COLLATE NOCASE`,
     )
     .all(userId);
+
+  const rules = db
+    .query<{ id: number; subscription_id: number; include_words: string; exclude_words: string | null; mode: string }, [number]>(
+      `SELECT wr.id, wr.subscription_id, wr.include_words, wr.exclude_words, wr.mode
+         FROM watch_rule wr JOIN subscription s ON s.id = wr.subscription_id
+        WHERE s.user_id = ? ORDER BY wr.id`,
+    )
+    .all(userId);
+
+  return feeds.map((f) => ({
+    ...f,
+    watch_rules: rules
+      .filter((r) => r.subscription_id === f.subscription_id)
+      .map(({ subscription_id, ...r }) => r),
+  }));
 }
 
 // ---------------------------------------------------------------- articles
@@ -276,6 +291,64 @@ app.patch("/api/feeds/:id", async (c) => {
     db.query("UPDATE subscription SET category_id = ? WHERE user_id = ? AND feed_id = ?").run(b.categoryId ?? null, u.id, feedId);
   return json({ ok: true });
 });
+
+// ---------------------------------------------------------------- watch rules
+// Each subscription may have any number of independent rules; a new article notifies when it
+// matches at least one of them. Scoping every write through this user's subscription keeps one
+// user from touching another user's rules.
+interface WatchRuleBody {
+  includeWords?: string;
+  excludeWords?: string | null;
+  mode?: string;
+}
+
+function ruleValues(b: WatchRuleBody | null) {
+  const include = b?.includeWords?.trim().slice(0, 1000) ?? "";
+  const exclude = b?.excludeWords?.trim().slice(0, 1000) ?? "";
+  return { include, exclude: exclude || null, mode: b?.mode === "all" ? "all" : "any" };
+}
+
+app.post("/api/feeds/:id/watch-rules", async (c) => {
+  const u = requireUser(c.req.raw);
+  if (u instanceof Response) return u;
+  const sub = db
+    .query<{ id: number }, [number, number]>("SELECT id FROM subscription WHERE user_id = ? AND feed_id = ?")
+    .get(u.id, Number(c.req.param("id")));
+  if (!sub) return err(404, "not found");
+  const b = await readJson<WatchRuleBody>(c.req.raw);
+  const v = ruleValues(b);
+  if (!v.include) return err(400, "includeWords required");
+  const row = db
+    .query<{ id: number; include_words: string; exclude_words: string | null; mode: string }, [number, string, string | null, string, number]>(
+      `INSERT INTO watch_rule (subscription_id, include_words, exclude_words, mode, created_at)
+       VALUES (?, ?, ?, ?, ?) RETURNING id, include_words, exclude_words, mode`,
+    )
+    .get(sub.id, v.include, v.exclude, v.mode, Date.now())!;
+  return json(row);
+});
+app.patch("/api/feeds/:id/watch-rules/:ruleId", async (c) => {
+  const u = requireUser(c.req.raw);
+  if (u instanceof Response) return u;
+  const b = await readJson<WatchRuleBody>(c.req.raw);
+  const v = ruleValues(b);
+  if (!v.include) return err(400, "includeWords required");
+  const res = db
+    .query(
+      `UPDATE watch_rule SET include_words = ?, exclude_words = ?, mode = ?
+        WHERE id = ? AND subscription_id IN (SELECT id FROM subscription WHERE user_id = ? AND feed_id = ?)`,
+    )
+    .run(v.include, v.exclude, v.mode, Number(c.req.param("ruleId")), u.id, Number(c.req.param("id")));
+  return res.changes ? json({ ok: true }) : err(404, "not found");
+});
+app.delete("/api/feeds/:id/watch-rules/:ruleId", (c) => {
+  const u = requireUser(c.req.raw);
+  if (u instanceof Response) return u;
+  db.query(
+    `DELETE FROM watch_rule
+      WHERE id = ? AND subscription_id IN (SELECT id FROM subscription WHERE user_id = ? AND feed_id = ?)`,
+  ).run(Number(c.req.param("ruleId")), u.id, Number(c.req.param("id")));
+  return json({ ok: true });
+});
 app.delete("/api/feeds/:id", (c) => {
   const u = requireUser(c.req.raw);
   if (u instanceof Response) return u;
@@ -446,6 +519,39 @@ app.get("/api/unread", (c) => {
     .all(u.id, u.id);
   const total = rows.reduce((n: number, r: any) => n + r.unread, 0);
   return json({ total, byCategory: rows });
+});
+
+app.get("/api/notifications", (c) => {
+  const u = requireUser(c.req.raw);
+  if (u instanceof Response) return u;
+  const items = db
+    .query<any, [number]>(
+      `SELECT n.id, n.feed_id, n.article_id, n.title, n.link, n.matched, n.read, n.created_at,
+              COALESCE(sub.custom_title, f.title, f.feed_url) AS feed_title
+       FROM notification n
+       JOIN feed f ON f.id = n.feed_id
+       LEFT JOIN subscription sub ON sub.user_id = n.user_id AND sub.feed_id = n.feed_id
+       WHERE n.user_id = ?
+       ORDER BY n.id DESC LIMIT 50`,
+    )
+    .all(u.id);
+  const unread = db
+    .query<{ n: number }, [number]>("SELECT COUNT(*) n FROM notification WHERE user_id = ? AND read = 0")
+    .get(u.id)!.n;
+  return json({ items, unread });
+});
+app.post("/api/notifications/read", async (c) => {
+  const u = requireUser(c.req.raw);
+  if (u instanceof Response) return u;
+  const b = await readJson<{ ids?: number[] }>(c.req.raw);
+  const ids = Array.isArray(b?.ids) ? b.ids.filter((id) => Number.isInteger(id)).slice(0, 200) : [];
+  if (ids.length) {
+    const update = db.query("UPDATE notification SET read = 1 WHERE user_id = ? AND id = ?");
+    db.transaction(() => ids.forEach((id) => update.run(u.id, id)))();
+  } else {
+    db.query("UPDATE notification SET read = 1 WHERE user_id = ?").run(u.id);
+  }
+  return json({ ok: true });
 });
 
 app.post("/api/refresh", async (c) => {
@@ -662,6 +768,7 @@ const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 setInterval(() => {
   db.query("DELETE FROM session WHERE expires_at < ?").run(Date.now());
   db.query("DELETE FROM login_log WHERE created_at < ?").run(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  db.query("DELETE FROM notification WHERE created_at < ?").run(Date.now() - 180 * 24 * 60 * 60 * 1000);
   // ponytail: no in-flight lock, so two ticks (or clients) can overlap on the same feed; upserts make it safe, just redundant I/O
   void refreshStale(REFRESH_INTERVAL_MS).catch(console.error);
 }, REFRESH_INTERVAL_MS);

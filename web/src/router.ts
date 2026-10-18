@@ -20,7 +20,8 @@ const routes: RouteRecordRaw[] = [
   { path: "/unread", component: Reader },
   { path: "/search", component: Reader },
   { path: "/subscribe", component: Subscribe },
-  { path: "/settings", component: Settings },
+  { path: "/settings", redirect: "/settings/language" },
+  { path: "/settings/:section", component: Settings },
   { path: "/admin", component: Admin, meta: { admin: true } },
 ];
 

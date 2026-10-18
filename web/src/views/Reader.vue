@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import DOMPurify from "dompurify";
-import { api, type ArticleFilter, type ArticleTag } from "../api";
+import { api, type ArticleFilter, type ArticleTag, type WatchNotification } from "../api";
 import { useArticles, useAuth, useFeeds, useUi } from "../store";
 import { locale, t } from "../i18n";
 import FeedIcon from "../components/FeedIcon.vue";
@@ -20,6 +20,9 @@ const search = ref("");
 const adding = ref(false);
 const extracting = ref(false);
 const sidebarOpen = ref(false);
+const notifications = ref<WatchNotification[]>([]);
+const notifyUnread = ref(0);
+const notifyOpen = ref(false);
 
 const filter = computed<ArticleFilter>(() => {
   if (route.params.feedId) return { feedId: Number(route.params.feedId) };
@@ -138,6 +141,35 @@ async function runSearch() {
   router.push({ path: "/search", query: { q: search.value } });
 }
 
+async function loadNotifications() {
+  const res = await api.notifications().catch(() => null);
+  if (!res) return;
+  notifications.value = res.items;
+  notifyUnread.value = res.unread;
+}
+
+function toggleNotifications() {
+  notifyOpen.value = !notifyOpen.value;
+  if (notifyOpen.value) void loadNotifications();
+}
+
+async function openNotification(n: WatchNotification) {
+  if (!n.read) {
+    n.read = 1;
+    notifyUnread.value = Math.max(0, notifyUnread.value - 1);
+    await api.readNotifications([n.id]).catch(() => {});
+  }
+  notifyOpen.value = false;
+  // Jump into the reader; the watcher below opens the article once the list is loaded.
+  router.push({ path: `/feed/${n.feed_id}`, query: { article: String(n.article_id) } });
+}
+
+async function readAllNotifications() {
+  await api.readNotifications().catch(() => {});
+  notifications.value.forEach((n) => (n.read = 1));
+  notifyUnread.value = 0;
+}
+
 async function markAllRead() {
   await api.markAllRead(filter.value);
   await Promise.all([articles.load(filter.value), feeds.load()]);
@@ -178,8 +210,24 @@ watch(
   { immediate: true, deep: true },
 );
 
+// A notification links to /feed/<id>?article=<id>: open that article as soon as it is in the list.
+watch(
+  [() => articles.list, () => route.query.article],
+  () => {
+    const id = Number(route.query.article);
+    if (!id || articles.current?.id === id) return;
+    if (articles.list.some((a) => a.id === id)) void select(id);
+  },
+);
+
 // narrow screens: the sidebar is a drawer, so any navigation closes it
-watch(() => route.fullPath, () => (sidebarOpen.value = false));
+watch(
+  () => route.fullPath,
+  () => {
+    sidebarOpen.value = false;
+    notifyOpen.value = false;
+  },
+);
 
 // ---- auto-sync: keep feeds, unread counts and read state fresh ----
 const POLL_MS = 60_000; // reload local data (picks up read state set by other clients)
@@ -189,7 +237,7 @@ let fetchTimer: number | undefined;
 
 async function reloadData() {
   if (document.hidden) return;
-  await Promise.all([feeds.load(), articles.load(filter.value)]);
+  await Promise.all([feeds.load(), articles.load(filter.value), loadNotifications()]);
   const cur = articles.current;
   if (cur) {
     const item = articles.list.find((a) => a.id === cur.id);
@@ -225,6 +273,7 @@ watch(() => ui.autoRefresh, startAutoSync);
 
 onMounted(async () => {
   await feeds.load();
+  void loadNotifications();
   window.addEventListener("keydown", onKey);
   document.addEventListener("visibilitychange", onVisibility);
   startAutoSync();
@@ -249,12 +298,33 @@ async function logout() {
       <header>
         <strong>bunrss</strong>
         <span class="spacer" />
-        <button class="icon" :class="{ spin: feeds.refreshing }" :title="t('reader.refreshAll')" @click="feeds.refresh()">⟳</button>
-        <button class="icon" :title="ui.dark ? t('reader.lightMode') : t('reader.darkMode')" @click="ui.toggle()">
-          {{ ui.dark ? "☀" : "☾" }}
+        <button class="icon" :class="{ spin: feeds.refreshing }" :title="t('reader.refreshAll')" @click="feeds.refresh()"><i class="fa-solid fa-rotate" /></button>
+        <button class="icon bell" :title="t('reader.notifications')" @click="toggleNotifications">
+          <i class="fa-solid fa-bell" />
+          <span v-if="notifyUnread" class="bell-count">{{ notifyUnread > 99 ? "99+" : notifyUnread }}</span>
         </button>
-        <router-link to="/settings" class="icon" :title="t('settings.title')">⚙</router-link>
+        <button class="icon" :title="ui.dark ? t('reader.lightMode') : t('reader.darkMode')" @click="ui.toggle()">
+          <i :class="ui.dark ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" />
+        </button>
+        <router-link to="/settings" class="icon" :title="t('settings.title')"><i class="fa-solid fa-gear" /></router-link>
       </header>
+
+      <div v-if="notifyOpen" class="notify-panel">
+        <div class="notify-head">
+          <strong>{{ t("reader.notifications") }}</strong>
+          <span class="spacer" />
+          <button v-if="notifyUnread" class="small" @click="readAllNotifications">{{ t("reader.markAllRead") }}</button>
+        </div>
+        <ul>
+          <li v-for="n in notifications" :key="n.id" :class="{ unread: !n.read }">
+            <button class="notify-item" @click="openNotification(n)">
+              <span class="ellipsis" :title="n.title ?? n.feed_title">{{ n.title || t("common.untitled") }}</span>
+              <span class="dim small">{{ n.feed_title }} · {{ t("reader.matched", { words: n.matched }) }} · {{ relative(n.created_at) }}</span>
+            </button>
+          </li>
+        </ul>
+        <p v-if="!notifications.length" class="dim small empty">{{ t("reader.noNotifications") }}</p>
+      </div>
 
       <nav class="views">
         <router-link to="/" class="item"><span>{{ t("nav.all") }}</span></router-link>
@@ -263,6 +333,7 @@ async function logout() {
       </nav>
 
       <div class="scroll">
+        <div v-if="feeds.categories.length || grouped.uncat.length" class="side-head">{{ t("nav.category") }}</div>
         <section v-for="cat in grouped.cats" :key="cat.id">
           <router-link :to="`/category/${cat.id}`" class="item group">
             <span>{{ cat.name }}</span>
@@ -272,7 +343,7 @@ async function logout() {
             <FeedIcon :feed="f" />
             <span class="ellipsis" :title="f.title">{{ f.title }}</span>
             <span v-if="f.unread" class="badge">{{ f.unread }}</span>
-            <span v-if="f.last_error" class="err" :title="t('reader.fetchFailed')">!</span>
+            <i v-if="f.last_error" class="fa-solid fa-triangle-exclamation err" :title="t('reader.fetchFailed')" />
           </router-link>
         </section>
         <section>
@@ -280,12 +351,12 @@ async function logout() {
             <FeedIcon :feed="f" />
             <span class="ellipsis" :title="f.title">{{ f.title }}</span>
             <span v-if="f.unread" class="badge">{{ f.unread }}</span>
-            <span v-if="f.last_error" class="err" :title="t('reader.fetchFailed')">!</span>
+            <i v-if="f.last_error" class="fa-solid fa-triangle-exclamation err" :title="t('reader.fetchFailed')" />
           </router-link>
         </section>
-        <section v-if="feeds.tags.length">
-          <div class="tags-head">{{ t("nav.tag") }}</div>
-          <router-link v-for="tag in feeds.tags" :key="tag.id" :to="`/tag/${tag.id}`" class="item child">
+        <section v-if="feeds.tags.length" class="tags">
+          <div class="side-head">{{ t("nav.tag") }}</div>
+          <router-link v-for="tag in feeds.tags" :key="tag.id" :to="`/tag/${tag.id}`" class="item">
             <span class="ellipsis">{{ tag.name }}</span>
             <span v-if="tag.unread" class="badge">{{ tag.unread }}</span>
           </router-link>
@@ -311,7 +382,7 @@ async function logout() {
 
       <footer>
         <span class="dim small ellipsis" :title="auth.user?.email">{{ auth.user?.username || auth.user?.email }}</span>
-        <button class="icon" :title="t('common.logout')" @click="logout">⎋</button>
+        <button class="icon" :title="t('common.logout')" @click="logout"><i class="fa-solid fa-right-from-bracket" /></button>
       </footer>
     </aside>
 
@@ -320,7 +391,7 @@ async function logout() {
     <!-- ---------------------------------------------------- list -->
     <section class="list">
       <header>
-        <button class="icon only-mobile" :title="t('reader.feedList')" @click="sidebarOpen = true">☰</button>
+        <button class="icon only-mobile" :title="t('reader.feedList')" @click="sidebarOpen = true"><i class="fa-solid fa-bars" /></button>
         <strong class="ellipsis">{{ viewTitle }}</strong>
         <span class="spacer" />
         <button class="small" @click="markAllRead">{{ t("reader.markAllRead") }}</button>
@@ -345,7 +416,7 @@ async function logout() {
               :title="a.starred ? t('reader.unstar') : t('reader.star')"
               @click.stop="toggleStar(a)"
             >
-              {{ a.starred ? "★" : "☆" }}
+              <i :class="a.starred ? 'fa-solid fa-star' : 'fa-regular fa-star'" />
             </button>
           </div>
           <div class="dim small ellipsis">{{ a.feed_title }} · {{ relative(a.published_at) }}</div>
@@ -358,7 +429,7 @@ async function logout() {
     <main class="reader">
       <template v-if="articles.current">
         <header class="reader-head">
-          <button class="icon only-mobile back" @click="closeReader">{{ t("common.back") }}</button>
+          <button class="icon only-mobile back" @click="closeReader"><i class="fa-solid fa-arrow-left" /> {{ t("common.back") }}</button>
           <h1>{{ articles.current.title || t("common.untitled") }}</h1>
           <div class="dim small">
             <FeedIcon v-if="currentFeed" class="inline-icon" :feed="currentFeed" />
@@ -368,6 +439,7 @@ async function logout() {
           </div>
           <div class="row actions">
             <button class="small" @click="toggleStar(articles.current)">
+              <i :class="articles.current.starred ? 'fa-solid fa-star' : 'fa-regular fa-star'" />
               {{ articles.current.starred ? t("reader.starOn") : t("reader.starOff") }}
             </button>
             <button class="small" @click="articles.setRead(articles.current, !articles.current.read)">
@@ -376,22 +448,22 @@ async function logout() {
             <button class="small" :disabled="extracting" @click="extract">
               {{ extracting ? t("reader.extracting") : t("reader.extract") }}
             </button>
-            <a v-if="articles.current.link" :href="articles.current.link" target="_blank" rel="noopener">{{ t("reader.original") }}</a>
+            <a v-if="articles.current.link" :href="articles.current.link" target="_blank" rel="noopener"><i class="fa-solid fa-arrow-up-right-from-square" /> {{ t("reader.original") }}</a>
             <span v-for="tag in articles.current.tags" :key="tag.id" class="chip">
               {{ tag.name }}
-              <button class="icon" :title="t('reader.removeTag')" @click="removeTag(tag)">×</button>
+              <button class="icon" :title="t('reader.removeTag')" @click="removeTag(tag)"><i class="fa-solid fa-xmark" /></button>
             </span>
             <select v-if="taggable.length" class="tag-add" @change="onPickTag">
               <option value="">{{ t("reader.addTag") }}</option>
               <option v-for="tag in taggable" :key="tag.id" :value="tag.id">{{ tag.name }}</option>
             </select>
-            <button class="small" @click="createAndTag">{{ t("reader.newTag") }}</button>
+            <button class="small" @click="createAndTag"><i class="fa-solid fa-plus" /> {{ t("reader.newTag") }}</button>
           </div>
         </header>
         <!-- sanitized with DOMPurify -->
         <div class="content" v-html="html" />
       </template>
-      <p v-else class="dim empty">{{ t("reader.selectArticle") }}</p>
+      <p v-else class="dim empty"><i class="fa-regular fa-file" /> {{ t("reader.selectArticle") }}</p>
     </main>
   </div>
 </template>
@@ -414,6 +486,70 @@ async function logout() {
 }
 .sidebar {
   background: var(--bg-alt);
+  position: relative;
+}
+.bell {
+  position: relative;
+}
+.bell-count {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 3px;
+  border-radius: 999px;
+}
+.notify-panel {
+  position: absolute;
+  z-index: 15;
+  top: 40px;
+  left: 6px;
+  right: 6px;
+  max-height: 60%;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 15%);
+}
+.notify-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.notify-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.notify-panel li {
+  border-bottom: 1px solid var(--border);
+}
+.notify-panel li.unread {
+  background: var(--accent-soft);
+}
+.notify-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 8px 10px;
+}
+.notify-item:hover {
+  background: var(--bg-hover);
+}
+.notify-item .ellipsis {
+  max-width: 100%;
 }
 .sidebar header,
 .list header,
@@ -465,9 +601,16 @@ async function logout() {
 .group {
   font-weight: 600;
 }
-.tags-head {
-  padding: 5px 8px;
+.side-head {
+  padding: 8px 8px 4px;
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.tags {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
 }
 .chip {
   display: inline-flex;

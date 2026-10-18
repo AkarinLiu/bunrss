@@ -52,3 +52,40 @@ export function verificationEmail(link: string, locale: Locale): { subject: stri
     html: `<p>请点击下面的链接验证你的邮箱（24 小时内有效）：</p><p><a href="${link}">${link}</a></p><p>如果这不是你本人的操作，请忽略本邮件。</p>`,
   };
 }
+
+export interface WatchMailItem {
+  title: string | null;
+  link: string | null;
+  matched: string;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/** Summary email for new articles that matched a subscription's watch words. */
+export function watchNotificationEmail(
+  feedTitle: string,
+  items: WatchMailItem[],
+): { subject: string; text: string; html: string } {
+  const safeLink = (link: string | null) => (link && /^https?:\/\//i.test(link) ? link : null);
+  const fallback = "(无标题)";
+  const text = items
+    .map((i) => {
+      const link = safeLink(i.link);
+      return `- ${i.title || fallback}（匹配：${i.matched}）${link ? `\n  ${link}` : ""}`;
+    })
+    .join("\n");
+  const html = items
+    .map((i) => {
+      const title = escapeHtml(i.title || fallback);
+      const link = safeLink(i.link);
+      return `<li>${link ? `<a href="${escapeHtml(link)}">${title}</a>` : title} <span style="color:#888">（匹配：${escapeHtml(i.matched)}）</span></li>`;
+    })
+    .join("");
+  return {
+    subject: `bunrss 关注词提醒：${feedTitle}（${items.length} 篇）`,
+    text: `订阅源「${feedTitle}」有新文章命中你的关注词：\n\n${text}`,
+    html: `<p>订阅源「${escapeHtml(feedTitle)}」有新文章命中你的关注词：</p><ul>${html}</ul>`,
+  };
+}

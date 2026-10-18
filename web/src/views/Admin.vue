@@ -123,7 +123,7 @@ onMounted(load);
 <template>
   <div class="page">
     <header>
-      <router-link to="/">{{ t("common.backToReader") }}</router-link>
+      <router-link to="/"><i class="fa-solid fa-arrow-left" /> {{ t("common.backToReader") }}</router-link>
       <strong>{{ t("settings.adminConsole") }}</strong>
       <span class="spacer" />
       <span class="dim small">{{ t("admin.uptime", { v: overview?.bun ?? "", uptime: formatUptime(overview?.uptimeSeconds ?? 0) }) }}</span>

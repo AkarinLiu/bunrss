@@ -17,6 +17,7 @@
         "vue-router": "^5.3.1",
       },
       "devDependencies": {
+        "@fortawesome/fontawesome-free": "^7.3.1",
         "@types/bun": "^1.4.2",
         "@types/nodemailer": "^8.0.2",
         "@vitejs/plugin-vue": "^6.0.9",
@@ -36,6 +37,8 @@
     "@babel/parser": ["@babel/parser@7.29.9", "https://registry.npmmirror.com/@babel/parser/-/parser-7.29.9.tgz", { "dependencies": { "@babel/types": "^7.29.8" }, "bin": "./bin/babel-parser.js" }, "sha512-CjXrNHTnvqBVqHgdBysY3vk2T8tpJHb5/RMeHJBTyVa9xgugCB0CJTx/3oO8RV2QRQP391RWpB7D6hLjm8V9uA=="],
 
     "@babel/types": ["@babel/types@7.29.8", "https://registry.npmmirror.com/@babel/types/-/types-7.29.8.tgz", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
+
+    "@fortawesome/fontawesome-free": ["@fortawesome/fontawesome-free@7.3.1", "https://registry.npmmirror.com/@fortawesome/fontawesome-free/-/fontawesome-free-7.3.1.tgz", {}, "sha512-wmglKKPDIkgV3aWlZzWECCPoGIkYCulzBwxG9+w7rc5BGapZ6cPMpoPOT8k36J0Ni7PPX6c/rsoMWfS4d1MUMg=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "https://registry.npmmirror.com/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

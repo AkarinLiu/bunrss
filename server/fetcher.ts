@@ -2,6 +2,7 @@ import Parser from "rss-parser";
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { db } from "./db";
+import { notifyWatchWords, type WatchArticle } from "./watch";
 
 const UA = "bunrss/1.0 (+https://github.com/)";
 const parser = new Parser({ timeout: 15000, headers: { "user-agent": UA } });
@@ -28,12 +29,17 @@ const selectIconState = db.query<{ icon_url: string | null; site_url: string | n
 );
 const setIconUrl = db.query("UPDATE feed SET icon_url = ? WHERE id = ?");
 
-const upsertArticle = db.query(
+// DO NOTHING + UPDATE instead of one upsert, so an inserted row is distinguishable from an
+// updated one: watch-word notifications must only fire for genuinely new articles.
+const insertArticle = db.query<{ id: number }, [number, string, string | null, string | null, string | null, string | null, string | null, number, number]>(
   `INSERT INTO article (feed_id, guid, title, link, author, content, summary, published_at, fetched_at)
    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-   ON CONFLICT(feed_id, guid) DO UPDATE SET
-     title = excluded.title, link = excluded.link, author = excluded.author,
-     content = excluded.content, summary = excluded.summary, published_at = excluded.published_at`,
+   ON CONFLICT(feed_id, guid) DO NOTHING
+   RETURNING id`,
+);
+const updateArticle = db.query(
+  `UPDATE article SET title = ?1, link = ?2, author = ?3, content = ?4, summary = ?5, published_at = ?6
+   WHERE feed_id = ?7 AND guid = ?8`,
 );
 const updateFeedMeta = db.query(
   `UPDATE feed SET
@@ -75,23 +81,22 @@ export async function refreshFeed(feed: FeedRow): Promise<number> {
 
   const now = Date.now();
   let count = 0;
+  const fresh: WatchArticle[] = [];
   db.transaction(() => {
     for (const raw of parsed.items ?? []) {
       const item = raw as Record<string, any>;
       const guid = String(item.guid ?? item.id ?? item.link ?? item.title ?? "").trim();
       if (!guid) continue;
+      const title = item.title ?? null;
+      const link = item.link ?? null;
+      const author = item.creator ?? item.author ?? null;
+      const content = item["content:encoded"] ?? item.content ?? null;
+      const summary = item.contentSnippet ?? item.summary ?? null;
       const pub = Date.parse(item.isoDate ?? "");
-      upsertArticle.run(
-        feed.id,
-        guid,
-        item.title ?? null,
-        item.link ?? null,
-        item.creator ?? item.author ?? null,
-        item["content:encoded"] ?? item.content ?? null,
-        item.contentSnippet ?? item.summary ?? null,
-        Number.isFinite(pub) ? pub : now,
-        now,
-      );
+      const publishedAt = Number.isFinite(pub) ? pub : now;
+      const inserted = insertArticle.get(feed.id, guid, title, link, author, content, summary, publishedAt, now);
+      if (inserted) fresh.push({ id: inserted.id, title, link, summary, content });
+      else updateArticle.run(title, link, author, content, summary, publishedAt, feed.id, guid);
       count++;
     }
   })();
@@ -106,6 +111,7 @@ export async function refreshFeed(feed: FeedRow): Promise<number> {
     feed.id,
   );
   await ensureFeedIcon(feed.id, parsed.link ?? null);
+  await notifyWatchWords(feed.id, fresh);
   return count;
 }
 

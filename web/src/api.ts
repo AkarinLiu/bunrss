@@ -15,6 +15,7 @@ export interface Feed {
   icon_url: string | null;
   description: string | null;
   category_id: number | null;
+  watch_rules: WatchRule[];
   last_error: string | null;
   unread: number;
 }
@@ -22,6 +23,12 @@ export interface Category {
   id: number;
   name: string;
   sort_order: number;
+}
+export interface WatchRule {
+  id: number;
+  include_words: string;
+  exclude_words: string | null;
+  mode: "any" | "all";
 }
 export interface DiscoveredFeed {
   title: string;
@@ -92,6 +99,17 @@ export interface ApiToken {
   label: string | null;
   created_at: number;
   last_used_at: number | null;
+}
+export interface WatchNotification {
+  id: number;
+  feed_id: number;
+  article_id: number;
+  feed_title: string;
+  title: string | null;
+  link: string | null;
+  matched: string;
+  read: number;
+  created_at: number;
 }
 
 /** The feed's site icon: the one the site declares, else the guessed /favicon.ico. */
@@ -184,6 +202,17 @@ export const api = {
     req<Feed>("POST", "/feeds", { url, categoryId }),
   updateFeed: (feedId: number, patch: { customTitle?: string | null; categoryId?: number | null }) =>
     req<{ ok: true }>("PATCH", `/feeds/${feedId}`, patch),
+  createWatchRule: (
+    feedId: number,
+    rule: { includeWords: string; excludeWords?: string | null; mode?: "any" | "all" },
+  ) => req<WatchRule>("POST", `/feeds/${feedId}/watch-rules`, rule),
+  updateWatchRule: (
+    feedId: number,
+    ruleId: number,
+    rule: { includeWords: string; excludeWords?: string | null; mode?: "any" | "all" },
+  ) => req<{ ok: true }>("PATCH", `/feeds/${feedId}/watch-rules/${ruleId}`, rule),
+  deleteWatchRule: (feedId: number, ruleId: number) =>
+    req<{ ok: true }>("DELETE", `/feeds/${feedId}/watch-rules/${ruleId}`),
   unsubscribe: (feedId: number) => req<{ ok: true }>("DELETE", `/feeds/${feedId}`),
 
   categories: () => req<Category[]>("GET", "/categories"),
@@ -220,6 +249,8 @@ export const api = {
     req<{ ok: true }>("POST", "/articles/mark-all-read", f),
 
   unread: () => req<{ total: number; byCategory: { category_id: number; unread: number }[] }>("GET", "/unread"),
+  notifications: () => req<{ items: WatchNotification[]; unread: number }>("GET", "/notifications"),
+  readNotifications: (ids?: number[]) => req<{ ok: true }>("POST", "/notifications/read", ids ? { ids } : {}),
   limits: () => req<LimitState>("GET", "/limits"),
   refresh: () => req<{ ok: true }>("POST", "/refresh"),
   refreshStale: () => req<{ ok: true }>("POST", "/refresh?stale=1"),

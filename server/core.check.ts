@@ -26,6 +26,7 @@ const {
 } = await import("./library");
 const { setLimits, setAdminSettings } = await import("./settings");
 const { exportArticles, importArchive, importArticles } = await import("./importexport");
+const { parseWatchWords, matchWatchRule, notifyWatchWords } = await import("./watch");
 const { db } = await import("./db");
 
 function check(cond: unknown, msg: string) {
@@ -366,6 +367,81 @@ try {
       .get(memberId, "https://zip.example/feed.xml")!.n === 1,
     "zip feed is subscribed",
   );
+
+  // ---------------------------------------------------------------- watch words
+  check(
+    parseWatchWords("rust, 数据库、SQLite").join("|") === "rust|数据库|SQLite",
+    "watch words split on commas and semicolons",
+  );
+  check(parseWatchWords("machine learning, rust").join("|") === "machine learning|rust", "spaces stay inside a word");
+  const sample = { id: 0, title: "Rust 1.90 发布", link: null, summary: "数据库驱动更新", content: null };
+  check(
+    matchWatchRule({ include: ["Rust", "数据库"], exclude: [], mode: "any" }, sample)?.length === 2,
+    "matching is case-insensitive across title/summary",
+  );
+  check(
+    matchWatchRule({ include: ["rust", "vue"], exclude: [], mode: "any" }, sample)?.join() === "rust",
+    "any mode needs only one include word",
+  );
+  check(
+    matchWatchRule({ include: ["rust", "vue"], exclude: [], mode: "all" }, sample) === null,
+    "all mode requires every include word",
+  );
+  check(
+    matchWatchRule({ include: ["rust"], exclude: ["数据库"], mode: "any" }, sample) === null,
+    "an exclude word vetoes the match",
+  );
+
+  const subId = db
+    .query<{ id: number }, [number, number]>("SELECT id FROM subscription WHERE user_id = ? AND feed_id = ?")
+    .get(memberId, feedId)!.id;
+  const addRule = db.query(
+    "INSERT INTO watch_rule (subscription_id, include_words, exclude_words, mode, created_at) VALUES (?, ?, ?, ?, ?)",
+  );
+  addRule.run(subId, "rust, 数据库", null, "any", Date.now());
+  addRule.run(subId, "发布", null, "any", Date.now());
+
+  const watchArticle = db
+    .query<{ id: number }, [number, string, string, string, number]>(
+      "INSERT INTO article (feed_id, guid, title, summary, fetched_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+    )
+    .get(feedId, "watch-1", "Rust 1.90 发布", "数据库驱动更新", Date.now())!;
+  const watchRow = { id: watchArticle.id, title: "Rust 1.90 发布", link: null, summary: "数据库驱动更新", content: null };
+  await notifyWatchWords(feedId, [watchRow]);
+  const notes = db
+    .query<{ matched: string; read: number }, [number]>("SELECT matched, read FROM notification WHERE user_id = ? ORDER BY id")
+    .all(memberId);
+  check(notes.length === 1, "a matching new article creates one in-app notification no matter how many rules hit");
+  check(notes[0]!.matched.includes("rust") && notes[0]!.matched.includes("发布"), "matched words from every hitting rule are kept");
+  check(notes[0]!.read === 0, "new notifications start unread");
+
+  await notifyWatchWords(feedId, [watchRow]);
+  check(
+    db.query<{ n: number }, [number]>("SELECT COUNT(*) n FROM notification WHERE user_id = ?").get(memberId)!.n === 1,
+    "re-notifying the same article is deduped",
+  );
+
+  const silent = db
+    .query<{ id: number }, [number, string, number]>(
+      "INSERT INTO article (feed_id, guid, title, fetched_at) VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .get(feedId, "watch-2", "Something else", Date.now())!;
+  await notifyWatchWords(feedId, [{ id: silent.id, title: "Something else", link: null, summary: null, content: null }]);
+  check(
+    db.query<{ n: number }, [number]>("SELECT COUNT(*) n FROM notification WHERE user_id = ?").get(memberId)!.n === 1,
+    "an article hitting no rule creates no notification",
+  );
+
+  const second = db
+    .query<{ id: number }, [number, string, number]>(
+      "INSERT INTO article (feed_id, guid, title, fetched_at) VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .get(feedId, "watch-3", "Go 1.24 发布", Date.now())!;
+  await notifyWatchWords(feedId, [{ id: second.id, title: "Go 1.24 发布", link: null, summary: null, content: null }]);
+  const afterSecond = db
+    .query<{ matched: string }, [number]>("SELECT matched FROM notification WHERE user_id = ? ORDER BY id DESC")
+    .all(memberId);
+  check(afterSecond.length === 2 && afterSecond[0]!.matched === "发布", "a second rule works independently");
 
   console.log("\ncore checks passed");
 } finally {
