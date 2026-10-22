@@ -9,7 +9,7 @@ services:
     init: true
     restart: unless-stopped
     ports:
-      - "${BUNRSS_PORT:-3000}:3000"
+      - "${PORT}:${PORT}"
     env_file: ./.env
     volumes:
       - ./server:/app/server
@@ -36,7 +36,3 @@ services:
       start_period: 60s
     # ponytail: single replica only — SQLite is one-writer and Bun.cron runs per process.
     # Move to Postgres before scaling out.
-
-volumes:
-  bunrss-node_modules:
-  bunrss-data:
