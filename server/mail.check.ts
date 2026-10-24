@@ -29,13 +29,25 @@ const splitSelectors = (v: string | undefined) =>
     .filter(Boolean);
 
 let to: string | undefined;
-const extraSelectors = splitSelectors(process.env.SMTP_DKIM_SELECTOR);
+const envRaw = process.env.SMTP_DKIM_SELECTOR;
+const envSelectors = splitSelectors(envRaw);
+const flagSelectors: string[] = [];
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i]!;
   if (arg === "--to") to = argv[++i]?.trim();
-  else if (arg === "--dkim-selector") extraSelectors.push(...splitSelectors(argv[++i]));
+  else if (arg === "--dkim-selector") flagSelectors.push(...splitSelectors(argv[++i]));
   else if (!arg.startsWith("-")) to = arg.trim();
 }
+// Where the selector came from matters: an env var that never reached this process looks exactly
+// like one that is set but wrong, so the report names the source of whichever selector it used.
+const given = [
+  ...flagSelectors.map((sel) => ({ sel, from: "--dkim-selector" })),
+  ...envSelectors.map((sel) => ({ sel, from: "SMTP_DKIM_SELECTOR" })),
+];
+const selectorWarning =
+  envRaw !== undefined && envSelectors.length === 0
+    ? `SMTP_DKIM_SELECTOR is set to ${JSON.stringify(envRaw)} but parses to no selector; ignoring it`
+    : null;
 
 /** The SMTP reply says what to fix; the nodemailer stack never does. */
 function hintFor(e: unknown): string | null {
@@ -88,46 +100,50 @@ function clip(s: string, max = 76): string {
   return s.length > max ? s.slice(0, max - 3) + "..." : s;
 }
 
-async function authReport(from: string, extraSelectors: string[]): Promise<string[]> {
+async function authReport(from: string, given: { sel: string; from: string }[]): Promise<string[]> {
   const domain = /@([^>\s,;]+)/.exec(from)?.[1]?.toLowerCase();
   if (!domain) return ["auth    skipped: sender has no domain to check"];
 
   // An explicit selector is authoritative; the built-in list is only a guess, and a key sitting
   // under a guessed name proves nothing about which selector the provider actually signs with
   // (企业邮 hands out random ones like yfrh2602, so `default` can exist and still never verify).
-  const explicit = extraSelectors.length > 0;
-  const names = [...new Set(explicit ? extraSelectors : DKIM_SELECTORS)].map((sel) =>
-    sel.includes("._domainkey") ? sel : `${sel}._domainkey.${domain}`,
-  );
+  const toName = (sel: string) => (sel.includes("._domainkey") ? sel : `${sel}._domainkey.${domain}`);
+  const all = given.length
+    ? given.map(({ sel, from: src }) => ({ name: toName(sel), source: src }))
+    : DKIM_SELECTORS.map((sel) => ({ name: toName(sel), source: null as string | null }));
+  const seen = new Set<string>();
+  const candidates = all.filter((c) => !seen.has(c.name) && seen.add(c.name));
+
   const [root, dmarc, ...keys] = await Promise.all([
     txtRecords(domain),
     txtRecords(`_dmarc.${domain}`),
-    ...names.map((name) => txtRecords(name)),
+    ...candidates.map((c) => txtRecords(c.name)),
   ]);
   if (root === null && dmarc === null) return [`auth    ${domain}: DNS lookups failed, cannot verify SPF/DMARC/DKIM`];
 
   const spf = (root ?? []).find((t) => /^v=spf1\b/i.test(t));
   const policy = (dmarc ?? []).find((t) => /^v=DMARC1\b/i.test(t));
-  const dkimIndex = keys.findIndex((rows) => (rows ?? []).some((t) => /^v=DKIM1|\bp=/i.test(t)));
-  const dkim = dkimIndex >= 0 ? names[dkimIndex] : null;
+  const hit = candidates[keys.findIndex((rows) => (rows ?? []).some((t) => /^v=DKIM1|\bp=/i.test(t)))];
+  const origin = hit?.source ? `from ${hit.source}` : "guessed selector";
+  const dkimLine = hit
+    ? `ok       ${hit.name}  (${origin})`
+    : given.length
+      ? `MISSING  no TXT at ${candidates.map((c) => c.name).join(", ")}`
+      : `MISSING  no TXT under any of ${candidates.length} guessed selectors`;
 
   const lines = [
     `auth    ${domain}`,
     `        SPF    ${spf ? `ok       ${clip(spf)}` : "MISSING  no v=spf1 TXT on the domain"}`,
     `        DMARC  ${policy ? `ok       ${clip(policy)}` : "MISSING  no _dmarc TXT on the domain"}`,
-    `        DKIM   ${
-      dkim
-        ? `ok       ${dkim}${explicit ? "" : "  (guessed selector)"}`
-        : `MISSING  no TXT under ${explicit ? "the given" : "any of " + names.length} selector(s)`
-    }`,
+    `        DKIM   ${dkimLine}`,
   ];
-  if (dkim && !explicit)
+  if (hit && !hit.source)
     lines.push(
       "        note: a key under a guessed name does not prove your provider signs with it. If a sent",
       "              message still fails dkim (\"key not found in DNS\"), read `s=` from its",
       "              DKIM-Signature header and pass --dkim-selector <selector>.",
     );
-  if (!dkim)
+  if (!hit)
     lines.push(
       "        note: the console switch only generates a key; the TXT still has to be published.",
       "        note: the selector is often random (企业邮 hands out names like yfrh2602), so guessing",
@@ -151,7 +167,8 @@ if (!mailEnabled()) {
   const mode = s.secure ? "implicit TLS" : "STARTTLS, if the server offers it";
   console.log(`target  ${s.host}:${s.port} (${mode}, ${s.user ? `auth as ${s.user}` : "no auth"})`);
   console.log(`sender  ${s.from}`);
-  for (const line of await authReport(s.from, extraSelectors)) console.log(line);
+  if (selectorWarning) console.log(`warn    ${selectorWarning}`);
+  for (const line of await authReport(s.from, given)) console.log(line);
   console.log("");
 
   console.log("[1/2] connect + TLS + AUTH ...");
