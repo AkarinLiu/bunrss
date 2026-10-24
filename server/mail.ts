@@ -139,19 +139,46 @@ export async function checkMailTransport(): Promise<void> {
   }
 }
 
+/**
+ * Every message shares one minimal, well-formed document: a bare `<p>`/`<pre>` fragment with no
+ * doctype, charset or footer is both an easy spam signal and bad in dark mode.
+ */
+export function htmlDocument(locale: Locale, body: string): string {
+  const footer =
+    locale === "en"
+      ? "Sent automatically by bunrss because this address was used on a bunrss instance."
+      : "此邮件由 bunrss 自动发送：该邮箱在你的 bunrss 实例上被使用，才会收到它。";
+  return `<!doctype html>
+<html lang="${locale}">
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:24px;background:#f5f5f3;font:15px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:#202124">
+<div style="max-width:520px;margin:0 auto;padding:24px;background:#fff;border:1px solid #e4e4e0;border-radius:10px">
+${body}
+<p style="margin:24px 0 0;padding-top:14px;border-top:1px solid #ececea;font-size:12px;line-height:1.5;color:#8a8a86">${footer}</p>
+</div>
+</body>
+</html>`;
+}
+
 /** Verification email copy, kept next to the sender so the link and wording travel together. */
 export function verificationEmail(link: string, locale: Locale): { subject: string; text: string; html: string } {
   if (locale === "en") {
     return {
       subject: "Verify your bunrss email address",
       text: `Click the link below to verify your email address (valid for 24 hours):\n${link}\n\nIf you didn't create this account, you can ignore this email.`,
-      html: `<p>Click the link below to verify your email address (valid for 24 hours):</p><p><a href="${link}">${link}</a></p><p>If you didn't create this account, you can ignore this email.</p>`,
+      html: htmlDocument(
+        "en",
+        `<p>Click the link below to verify your email address (valid for 24 hours):</p><p><a href="${link}">${link}</a></p><p>If you didn't create this account, you can ignore this email.</p>`,
+      ),
     };
   }
   return {
     subject: "验证你的 bunrss 邮箱",
     text: `请点击下面的链接验证你的邮箱（24 小时内有效）：\n${link}\n\n如果这不是你本人的操作，请忽略本邮件。`,
-    html: `<p>请点击下面的链接验证你的邮箱（24 小时内有效）：</p><p><a href="${link}">${link}</a></p><p>如果这不是你本人的操作，请忽略本邮件。</p>`,
+    html: htmlDocument(
+      "zh-CN",
+      `<p>请点击下面的链接验证你的邮箱（24 小时内有效）：</p><p><a href="${link}">${link}</a></p><p>如果这不是你本人的操作，请忽略本邮件。</p>`,
+    ),
   };
 }
 
@@ -161,7 +188,8 @@ export interface WatchMailItem {
   matched: string;
 }
 
-function escapeHtml(s: string): string {
+/** Also used by the CLI test message, so it renders exactly like the real mails. */
+export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
@@ -188,6 +216,9 @@ export function watchNotificationEmail(
   return {
     subject: `bunrss 关注词提醒：${feedTitle}（${items.length} 篇）`,
     text: `订阅源「${feedTitle}」有新文章命中你的关注词：\n\n${text}`,
-    html: `<p>订阅源「${escapeHtml(feedTitle)}」有新文章命中你的关注词：</p><ul>${html}</ul>`,
+    html: htmlDocument(
+      "zh-CN",
+      `<p>订阅源「${escapeHtml(feedTitle)}」有新文章命中你的关注词：</p><ul>${html}</ul>`,
+    ),
   };
 }
