@@ -5,13 +5,15 @@
 import { resolveTxt } from "node:dns/promises";
 import { describeMailError, escapeHtml, htmlDocument, mailEnabled, mailSettings, sendMail, verifyMailTransport } from "./mail";
 
-const USAGE = `usage: bun run check:mail [recipient]
+const USAGE = `usage: bun run check:mail [recipient] [--dkim-selector <name[,name]>]
        bun run check:mail --to <recipient>
 
   (no recipient)   connect + TLS + AUTH, plus the sender domain's SPF/DMARC/DKIM records
   <recipient>      additionally send one test message through sendMail()
+  --dkim-selector  extra selector(s) to look up when the mail console uses an unusual name
 
-Reads SMTP_* from the environment (Bun loads .env). Exit code 0 means the whole path works.
+Reads SMTP_* (and SMTP_DKIM_SELECTOR) from the environment (Bun loads .env). Exit code 0 means
+the whole path works.
 `;
 
 const argv = process.argv.slice(2);
@@ -20,8 +22,20 @@ if (argv.includes("-h") || argv.includes("--help")) {
   process.exit(0);
 }
 
-const toIndex = argv.indexOf("--to");
-const to = (toIndex >= 0 ? argv[toIndex + 1] : argv.find((a) => !a.startsWith("-")))?.trim();
+const splitSelectors = (v: string | undefined) =>
+  (v ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+let to: string | undefined;
+const extraSelectors = splitSelectors(process.env.SMTP_DKIM_SELECTOR);
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i]!;
+  if (arg === "--to") to = argv[++i]?.trim();
+  else if (arg === "--dkim-selector") extraSelectors.push(...splitSelectors(argv[++i]));
+  else if (!arg.startsWith("-")) to = arg.trim();
+}
 
 /** The SMTP reply says what to fix; the nodemailer stack never does. */
 function hintFor(e: unknown): string | null {
@@ -74,31 +88,52 @@ function clip(s: string, max = 76): string {
   return s.length > max ? s.slice(0, max - 3) + "..." : s;
 }
 
-async function authReport(from: string): Promise<string[]> {
+async function authReport(from: string, extraSelectors: string[]): Promise<string[]> {
   const domain = /@([^>\s,;]+)/.exec(from)?.[1]?.toLowerCase();
   if (!domain) return ["auth    skipped: sender has no domain to check"];
 
+  // An explicit selector is authoritative; the built-in list is only a guess, and a key sitting
+  // under a guessed name proves nothing about which selector the provider actually signs with
+  // (企业邮 hands out random ones like yfrh2602, so `default` can exist and still never verify).
+  const explicit = extraSelectors.length > 0;
+  const names = [...new Set(explicit ? extraSelectors : DKIM_SELECTORS)].map((sel) =>
+    sel.includes("._domainkey") ? sel : `${sel}._domainkey.${domain}`,
+  );
   const [root, dmarc, ...keys] = await Promise.all([
     txtRecords(domain),
     txtRecords(`_dmarc.${domain}`),
-    ...DKIM_SELECTORS.map((sel) => txtRecords(`${sel}._domainkey.${domain}`)),
+    ...names.map((name) => txtRecords(name)),
   ]);
   if (root === null && dmarc === null) return [`auth    ${domain}: DNS lookups failed, cannot verify SPF/DMARC/DKIM`];
 
   const spf = (root ?? []).find((t) => /^v=spf1\b/i.test(t));
   const policy = (dmarc ?? []).find((t) => /^v=DMARC1\b/i.test(t));
-  const dkim = DKIM_SELECTORS.find((_, i) => (keys[i] ?? []).some((t) => /^v=DKIM1|;\s*p=|\bp=/i.test(t)));
+  const dkimIndex = keys.findIndex((rows) => (rows ?? []).some((t) => /^v=DKIM1|\bp=/i.test(t)));
+  const dkim = dkimIndex >= 0 ? names[dkimIndex] : null;
 
   const lines = [
     `auth    ${domain}`,
     `        SPF    ${spf ? `ok       ${clip(spf)}` : "MISSING  no v=spf1 TXT on the domain"}`,
     `        DMARC  ${policy ? `ok       ${clip(policy)}` : "MISSING  no _dmarc TXT on the domain"}`,
-    `        DKIM   ${dkim ? `ok       selector "${dkim}"` : `MISSING  none of ${DKIM_SELECTORS.slice(0, 5).join("/")}… resolves`}`,
+    `        DKIM   ${
+      dkim
+        ? `ok       ${dkim}${explicit ? "" : "  (guessed selector)"}`
+        : `MISSING  no TXT under ${explicit ? "the given" : "any of " + names.length} selector(s)`
+    }`,
   ];
+  if (dkim && !explicit)
+    lines.push(
+      "        note: a key under a guessed name does not prove your provider signs with it. If a sent",
+      "              message still fails dkim (\"key not found in DNS\"), read `s=` from its",
+      "              DKIM-Signature header and pass --dkim-selector <selector>.",
+    );
   if (!dkim)
     lines.push(
-      "        note: with SPF only, a low-volume sender is easy to spam-folder. Turn DKIM on in the",
-      "              mail admin console (企业邮: 设置 → 域名管理), publish the TXT it gives you, re-run.",
+      "        note: the console switch only generates a key; the TXT still has to be published.",
+      "        note: the selector is often random (企业邮 hands out names like yfrh2602), so guessing",
+      "              is unreliable. Read the record name in the admin console, or the `s=` tag of a",
+      "              received message's DKIM-Signature, then pass --dkim-selector <selector>.",
+      "        note: without DKIM, SPF alone still spam-folders a low-volume sender.",
     );
   if (!spf || !policy)
     lines.push("        note: missing SPF or DMARC means most large providers will treat this sender as suspect.");
@@ -116,7 +151,7 @@ if (!mailEnabled()) {
   const mode = s.secure ? "implicit TLS" : "STARTTLS, if the server offers it";
   console.log(`target  ${s.host}:${s.port} (${mode}, ${s.user ? `auth as ${s.user}` : "no auth"})`);
   console.log(`sender  ${s.from}`);
-  for (const line of await authReport(s.from)) console.log(line);
+  for (const line of await authReport(s.from, extraSelectors)) console.log(line);
   console.log("");
 
   console.log("[1/2] connect + TLS + AUTH ...");

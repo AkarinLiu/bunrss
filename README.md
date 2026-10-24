@@ -90,7 +90,7 @@ bun run check:mail you@example.com    # 再真发一封测试邮件
 进不进垃圾箱，主要由收件方对**发件域名的身份认证**决定，而不是邮件措辞。`check:mail` 会顺手把这三个 DNS 记录查一遍：
 
 - **SPF**：域名的 `v=spf1` 必须包含邮件服务商（企业邮是 `include:spf.mail.qq.com`）。
-- **DKIM**：要在服务商后台开启，再把给出的公钥 TXT 加进 DNS。只配了 SPF 时，新发件人很容易被判垃圾邮件——这一项最常缺。
+- **DKIM**：要在服务商后台开启，再把给出的公钥 TXT 加进 DNS。后台那个开关只是**生成密钥**，TXT 没发布就等于没开。两个坑：① 记录加在了注册商/DNSPod，而域名 NS 指向 Cloudflare，那样完全不生效；② **selector 通常是随机串**（企业邮会给形如 `yfrh2602` 的名字），不是 `default`，照抄示例记录名会让签名一直 `dkim=fail key not found`。以控制台「主机记录」为准，或从收到的邮件头里读 `DKIM-Signature: … s=<selector>`，再 `bun run check:mail --dkim-selector <selector>`（也可写进 `SMTP_DKIM_SELECTOR`）。
 - **DMARC**：建议先 `p=none` 观察，确认 SPF/DKIM 都过再收紧。`p=reject` 下任何一项不过不是进垃圾箱，而是直接被拒收。
 
 除此之外能做的：发件人地址固定，别频繁更换；第一次落进垃圾箱时点一次「这不是垃圾邮件」，国内邮箱会据此调整对该发件人的判定；邮件正文保持纯文本 + HTML 双份、完整成文（本项目的三种邮件都走同一个 `htmlDocument()` 模板）。
