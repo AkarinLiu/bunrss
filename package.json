@@ -13,6 +13,7 @@
     "smoke": "bun run server/smoke.ts",
     "check": "bun run server/core.check.ts",
     "check:greader": "bun run server/greader.check.ts",
+    "check:mail": "bun run server/mail.check.ts",
     "e2e": "bun run build && bun run e2e.setup.ts"
   },
   "devDependencies": {

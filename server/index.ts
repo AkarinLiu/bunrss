@@ -20,6 +20,7 @@ import { adminSettings, allowRegistration, limits, setAdminSettings } from "./se
 import { exportArticles, importArchive, importArticles, importOpml } from "./importexport";
 import { greader } from "./greader";
 import { localeFrom, translate } from "./i18n";
+import { checkMailTransport } from "./mail";
 import { join, resolve } from "node:path";
 
 const requireUser = (req: Request): User | Response => currentUser(req) ?? err(401, "unauthorized");
@@ -774,3 +775,6 @@ setInterval(() => {
 }, REFRESH_INTERVAL_MS);
 
 console.log(`bunrss listening on http://localhost:${server.port}`);
+
+// Surface a broken SMTP setup at boot, not at the first sign-up. Best-effort and non-fatal.
+void checkMailTransport();

@@ -11,7 +11,7 @@ process.env.DATABASE_URL = file;
 delete process.env.SMTP_HOST;
 
 const { adminCreateUser, login, needsSetup, setUsername, setupAdmin, register, verifyEmail } = await import("./auth");
-const { mailEnabled } = await import("./mail");
+const { mailEnabled, transportMode } = await import("./mail");
 const {
   addArticleTag,
   articleTags,
@@ -183,6 +183,19 @@ try {
 
   // ---------------------------------------------------------------- email verification
   check(mailEnabled() === false, "mail is off without SMTP_HOST");
+
+  // Port/secure pairing. SMTP_SECURE=true on 587 is what produces BoringSSL WRONG_VERSION_NUMBER,
+  // so the port has to win over a stale flag instead of breaking every verification email.
+  check(transportMode(465, null).secure === true, "port 465 defaults to implicit TLS");
+  check(transportMode(587, null).secure === false, "port 587 defaults to STARTTLS");
+  const stale = transportMode(587, true);
+  check(stale.secure === false && stale.warning !== null, "SMTP_SECURE=true on 587 falls back to STARTTLS with a warning");
+  const explicit465 = transportMode(465, false);
+  check(explicit465.secure === true && explicit465.warning !== null, "port 465 keeps implicit TLS even with SMTP_SECURE=false");
+  check(transportMode(2465, true).secure === true, "a custom port still honours SMTP_SECURE=true");
+  check(transportMode(2465, true).warning === null, "a consistent custom-port setting warns about nothing");
+  check(transportMode(2465, null).secure === false, "an unset SMTP_SECURE on a custom port assumes STARTTLS");
+
   check(
     db.query<{ v: number }, [number]>("SELECT email_verified v FROM user WHERE id = ?").get(memberId)!.v === 1,
     "accounts registered without SMTP are verified immediately",

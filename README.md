@@ -76,6 +76,17 @@ SMTP_PASS=
 SMTP_FROM=bunrss <noreply@example.com>
 ```
 
+`SMTP_SECURE=true` 表示「连上就说 TLS」，只在 465 这种隐式 TLS 端口成立。把它配到 587/25 上，服务器会用明文 `220` 问候回应 ClientHello，日志里就是 `ESOCKET ... WRONG_VERSION_NUMBER`；此时端口优先，程序会在启动日志里告警并自动退回 STARTTLS。启动时还会做一次 `verify()`，配置错会在启动日志里直接报出来，而不是等到有人注册才发现。
+
+填好 SMTP 后可以先用命令行验证发信，不必真的去注册一个账号：
+
+```
+bun run check:mail                    # 只做连接 + TLS + 认证，不发信
+bun run check:mail you@example.com    # 再真发一封测试邮件
+```
+
+连接断开、认证被拒、发件人未授权都会直接指出该改哪个变量；退出码 0 表示这条链路（与注册验证邮件同一段代码）已经通了，1 是 SMTP 报错，2 是收件人地址不像邮箱。
+
 ## 架构
 
 ```
